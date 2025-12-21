@@ -20,10 +20,12 @@ app.use(helmet());
 
 // CORS - pozwól na requesty z frontendu
 app.use(cors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+    origin: [
+        'http://localhost:5173',
+        'https://angoralinks-frontend.vercel.app'
+    ],
     credentials: true
 }));
-
 // Rate limiting - ochrona przed DDoS
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minut
