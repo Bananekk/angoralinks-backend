@@ -1,24 +1,18 @@
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 
 class EmailService {
     constructor() {
-        this.transporter = null;
-        this.initTransporter();
+        this.resend = null;
+        this.fromEmail = 'AngoraLinks <onboarding@resend.dev>'; // Zmień po dodaniu domeny
+        this.initResend();
     }
 
-    initTransporter() {
-        if (process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASS) {
-            this.transporter = nodemailer.createTransport({
-                host: process.env.EMAIL_HOST,
-                port: parseInt(process.env.EMAIL_PORT) || 587,
-                secure: false,
-                auth: {
-                    user: process.env.EMAIL_USER,
-                    pass: process.env.EMAIL_PASS
-                }
-            });
+    initResend() {
+        if (process.env.RESEND_API_KEY) {
+            this.resend = new Resend(process.env.RESEND_API_KEY);
+            console.log('✅ Resend skonfigurowany');
         } else {
-            console.warn('Email nie skonfigurowany - weryfikacja email wyłączona');
+            console.warn('⚠️ RESEND_API_KEY nie ustawiony - email wyłączony');
         }
     }
 
@@ -29,14 +23,14 @@ class EmailService {
 
     // Wyślij email z kodem weryfikacyjnym
     async sendVerificationCode(email, code) {
-        if (!this.transporter) {
+        if (!this.resend) {
             console.warn('Email nie skonfigurowany - pomijam wysyłkę');
             return true;
         }
 
         try {
-            await this.transporter.sendMail({
-                from: process.env.EMAIL_FROM || 'AngoraLinks <noreply@angoralinks.com>',
+            const { data, error } = await this.resend.emails.send({
+                from: this.fromEmail,
                 to: email,
                 subject: 'Kod weryfikacyjny - AngoraLinks',
                 html: `
@@ -75,7 +69,12 @@ class EmailService {
                 `
             });
 
-            console.log(`Email weryfikacyjny wysłany do: ${email}`);
+            if (error) {
+                console.error('Błąd Resend:', error);
+                return false;
+            }
+
+            console.log(`✅ Email weryfikacyjny wysłany do: ${email}, ID: ${data.id}`);
             return true;
 
         } catch (error) {
@@ -84,13 +83,13 @@ class EmailService {
         }
     }
 
-    // Wyślij email o udanej weryfikacji
+    // Wyślij email powitalny
     async sendWelcomeEmail(email) {
-        if (!this.transporter) return true;
+        if (!this.resend) return true;
 
         try {
-            await this.transporter.sendMail({
-                from: process.env.EMAIL_FROM || 'AngoraLinks <noreply@angoralinks.com>',
+            const { error } = await this.resend.emails.send({
+                from: this.fromEmail,
                 to: email,
                 subject: 'Witaj w AngoraLinks! 🎉',
                 html: `
@@ -124,7 +123,7 @@ class EmailService {
                                 <li>Śledzić statystyki</li>
                             </ul>
                             <p style="text-align: center; margin-top: 24px;">
-                                <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/dashboard" class="button">Przejdź do panelu</a>
+                                <a href="${process.env.FRONTEND_URL || 'https://angoralinks.com'}/dashboard" class="button">Przejdź do panelu</a>
                             </p>
                             <div class="footer">
                                 &copy; 2024 AngoraLinks. Wszystkie prawa zastrzeżone.
@@ -135,6 +134,11 @@ class EmailService {
                 `
             });
 
+            if (error) {
+                console.error('Błąd welcome email:', error);
+                return false;
+            }
+
             return true;
         } catch (error) {
             console.error('Błąd wysyłania welcome email:', error);
@@ -142,20 +146,13 @@ class EmailService {
         }
     }
 
-    // ====================================
-    // NOWE METODY - FORMULARZE KONTAKTOWE
-    // ====================================
-
-    // Wyślij potwierdzenie otrzymania wiadomości do użytkownika
+    // Potwierdzenie kontaktu
     async sendContactConfirmation(email, name, subject) {
-        if (!this.transporter) {
-            console.warn('Email nie skonfigurowany - pomijam wysyłkę potwierdzenia');
-            return true;
-        }
+        if (!this.resend) return true;
 
         try {
-            await this.transporter.sendMail({
-                from: process.env.EMAIL_FROM || 'AngoraLinks <noreply@angoralinks.com>',
+            const { error } = await this.resend.emails.send({
+                from: this.fromEmail,
                 to: email,
                 subject: 'Otrzymaliśmy Twoją wiadomość - AngoraLinks',
                 html: `
@@ -167,13 +164,8 @@ class EmailService {
                             .container { max-width: 500px; margin: 0 auto; background-color: #1e293b; border-radius: 16px; padding: 32px; }
                             .logo { text-align: center; margin-bottom: 24px; }
                             .logo span { font-size: 24px; font-weight: bold; color: #0ea5e9; }
-                            .icon { text-align: center; margin: 24px 0; }
-                            .icon span { font-size: 64px; }
-                            .info-box { background-color: #0f172a; border-radius: 12px; padding: 16px; margin: 24px 0; }
-                            .info-row { display: flex; margin-bottom: 8px; }
-                            .info-label { color: #64748b; width: 80px; }
-                            .info-value { color: #f8fafc; }
                             .text { color: #94a3b8; line-height: 1.6; }
+                            .info-box { background-color: #0f172a; border-radius: 12px; padding: 16px; margin: 24px 0; }
                             .footer { text-align: center; margin-top: 24px; color: #64748b; font-size: 12px; }
                         </style>
                     </head>
@@ -182,24 +174,15 @@ class EmailService {
                             <div class="logo">
                                 <span>🔗 AngoraLinks</span>
                             </div>
-                            <div class="icon">
-                                <span>📨</span>
-                            </div>
-                            <h2 style="text-align: center; margin-bottom: 16px; color: #22c55e;">Otrzymaliśmy Twoją wiadomość!</h2>
+                            <h2 style="text-align: center; color: #22c55e;">📨 Otrzymaliśmy Twoją wiadomość!</h2>
                             <p class="text">Cześć <strong style="color: #f8fafc;">${name}</strong>!</p>
-                            <p class="text">Dziękujemy za kontakt z nami. Twoja wiadomość została pomyślnie dostarczona.</p>
-                            
+                            <p class="text">Dziękujemy za kontakt. Twoja wiadomość została dostarczona.</p>
                             <div class="info-box">
-                                <div class="info-row">
-                                    <span class="info-label">Temat:</span>
-                                    <span class="info-value">${subject}</span>
-                                </div>
+                                <p style="color: #64748b; margin: 0;">Temat:</p>
+                                <p style="color: #f8fafc; margin: 4px 0 0 0;"><strong>${subject}</strong></p>
                             </div>
-                            
-                            <p class="text">Postaramy się odpowiedzieć najszybciej jak to możliwe, zazwyczaj w ciągu <strong style="color: #f8fafc;">24-48 godzin</strong>.</p>
-                            
-                            <p class="text" style="margin-top: 24px;">Pozdrawiamy,<br><strong style="color: #0ea5e9;">Zespół AngoraLinks</strong></p>
-                            
+                            <p class="text">Odpowiemy w ciągu <strong style="color: #f8fafc;">24-48 godzin</strong>.</p>
+                            <p class="text">Pozdrawiamy,<br><strong style="color: #0ea5e9;">Zespół AngoraLinks</strong></p>
                             <div class="footer">
                                 &copy; 2024 AngoraLinks. Wszystkie prawa zastrzeżone.
                             </div>
@@ -209,25 +192,26 @@ class EmailService {
                 `
             });
 
-            console.log(`Email potwierdzenia kontaktu wysłany do: ${email}`);
-            return true;
+            if (error) {
+                console.error('Błąd contact email:', error);
+                return false;
+            }
 
+            console.log(`✅ Potwierdzenie kontaktu wysłane do: ${email}`);
+            return true;
         } catch (error) {
-            console.error('Błąd wysyłania email potwierdzenia:', error);
+            console.error('Błąd wysyłania potwierdzenia:', error);
             return false;
         }
     }
 
-    // Wyślij powiadomienie, że wiadomość została odczytana
+    // Powiadomienie o przeczytaniu
     async sendMessageReadNotification(email, name, subject) {
-        if (!this.transporter) {
-            console.warn('Email nie skonfigurowany - pomijam wysyłkę powiadomienia');
-            return true;
-        }
+        if (!this.resend) return true;
 
         try {
-            await this.transporter.sendMail({
-                from: process.env.EMAIL_FROM || 'AngoraLinks <noreply@angoralinks.com>',
+            const { error } = await this.resend.emails.send({
+                from: this.fromEmail,
                 to: email,
                 subject: 'Twoja wiadomość została przeczytana - AngoraLinks',
                 html: `
@@ -239,11 +223,9 @@ class EmailService {
                             .container { max-width: 500px; margin: 0 auto; background-color: #1e293b; border-radius: 16px; padding: 32px; }
                             .logo { text-align: center; margin-bottom: 24px; }
                             .logo span { font-size: 24px; font-weight: bold; color: #0ea5e9; }
-                            .icon { text-align: center; margin: 24px 0; }
-                            .icon span { font-size: 64px; }
                             .status-box { background-color: rgba(34, 197, 94, 0.1); border: 1px solid #22c55e; border-radius: 12px; padding: 16px; margin: 24px 0; text-align: center; }
-                            .info-box { background-color: #0f172a; border-radius: 12px; padding: 16px; margin: 24px 0; }
                             .text { color: #94a3b8; line-height: 1.6; }
+                            .info-box { background-color: #0f172a; border-radius: 12px; padding: 16px; margin: 24px 0; }
                             .footer { text-align: center; margin-top: 24px; color: #64748b; font-size: 12px; }
                         </style>
                     </head>
@@ -252,26 +234,17 @@ class EmailService {
                             <div class="logo">
                                 <span>🔗 AngoraLinks</span>
                             </div>
-                            <div class="icon">
-                                <span>👀</span>
-                            </div>
-                            <h2 style="text-align: center; margin-bottom: 16px;">Twoja wiadomość została przeczytana</h2>
-                            
+                            <h2 style="text-align: center;">👀 Wiadomość przeczytana</h2>
                             <div class="status-box">
                                 <span style="color: #22c55e; font-weight: bold;">✓ Przeczytana przez zespół</span>
                             </div>
-                            
                             <p class="text">Cześć <strong style="color: #f8fafc;">${name}</strong>!</p>
-                            <p class="text">Informujemy, że Twoja wiadomość dotycząca tematu:</p>
-                            
+                            <p class="text">Twoja wiadomość:</p>
                             <div class="info-box">
                                 <p style="color: #0ea5e9; margin: 0; font-weight: bold;">"${subject}"</p>
                             </div>
-                            
-                            <p class="text">została przeczytana przez nasz zespół. Jeśli Twoje zgłoszenie wymaga odpowiedzi, wkrótce się z Tobą skontaktujemy.</p>
-                            
-                            <p class="text" style="margin-top: 24px;">Pozdrawiamy,<br><strong style="color: #0ea5e9;">Zespół AngoraLinks</strong></p>
-                            
+                            <p class="text">została przeczytana. Jeśli wymaga odpowiedzi, wkrótce się odezwiemy.</p>
+                            <p class="text">Pozdrawiamy,<br><strong style="color: #0ea5e9;">Zespół AngoraLinks</strong></p>
                             <div class="footer">
                                 &copy; 2024 AngoraLinks. Wszystkie prawa zastrzeżone.
                             </div>
@@ -281,11 +254,11 @@ class EmailService {
                 `
             });
 
-            console.log(`Email o odczytaniu wiadomości wysłany do: ${email}`);
+            if (error) return false;
+            console.log(`✅ Powiadomienie o przeczytaniu wysłane do: ${email}`);
             return true;
-
         } catch (error) {
-            console.error('Błąd wysyłania email o odczytaniu:', error);
+            console.error('Błąd wysyłania powiadomienia:', error);
             return false;
         }
     }
