@@ -1,0 +1,174 @@
+generator client {
+    provider = "prisma-client-js"
+}
+
+datasource db {
+    provider = "postgresql"
+    url      = env("DATABASE_URL")
+}
+
+// ======================
+// UŻYTKOWNICY
+// ======================
+
+model User {
+    id            String   @id @default(cuid())
+    email         String   @unique
+    passwordHash  String   @map("password_hash")
+    
+    // Finanse
+    balance       Decimal  @default(0) @db.Decimal(10, 4)
+    totalEarned   Decimal  @default(0) @map("total_earned") @db.Decimal(10, 4)
+    
+    // Status
+    isVerified    Boolean  @default(false) @map("is_verified")
+    isActive      Boolean  @default(true) @map("is_active")
+    isAdmin       Boolean  @default(false) @map("is_admin")
+    
+    // Weryfikacja email
+    verificationCode   String?   @map("verification_code")
+    verificationExpires DateTime? @map("verification_expires")
+    
+    // Timestamps
+    createdAt     DateTime @default(now()) @map("created_at")
+    updatedAt     DateTime @updatedAt @map("updated_at")
+    
+    // Relacje
+    links         Link[]
+    payouts       Payout[]
+    
+    @@map("users")
+}
+
+// ======================
+// LINKI
+// ======================
+
+model Link {
+    id           String   @id @default(cuid())
+    userId       String   @map("user_id")
+    
+    // URL
+    originalUrl  String   @map("original_url")
+    shortCode    String   @unique @map("short_code")
+    
+    // Metadane
+    title        String?
+    description  String?
+    
+    // Statystyki
+    totalClicks  Int      @default(0) @map("total_clicks")
+    totalEarned  Decimal  @default(0) @map("total_earned") @db.Decimal(10, 4)
+    
+    // Status
+    isActive     Boolean  @default(true) @map("is_active")
+    
+    // Timestamps
+    createdAt    DateTime @default(now()) @map("created_at")
+    updatedAt    DateTime @updatedAt @map("updated_at")
+    
+    // Relacje
+    user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+    visits       Visit[]
+    
+    @@index([userId])
+    @@index([shortCode])
+    @@map("links")
+}
+
+// ======================
+// WIZYTY (KLIKNIĘCIA)
+// ======================
+
+model Visit {
+    id          String   @id @default(cuid())
+    linkId      String   @map("link_id")
+    
+    // Dane odwiedzającego
+    ipAddress   String   @map("ip_address")
+    country     String?
+    city        String?
+    device      String?  // mobile, desktop, tablet
+    browser     String?
+    referer     String?
+    
+    // Zarobek
+    earned      Decimal  @default(0) @db.Decimal(10, 4)
+    
+    // Status
+    completed   Boolean  @default(false) // czy przeszedł przez reklamy
+    
+    // Timestamps
+    createdAt   DateTime @default(now()) @map("created_at")
+    
+    // Relacje
+    link        Link     @relation(fields: [linkId], references: [id], onDelete: Cascade)
+    
+    @@index([linkId])
+    @@index([ipAddress])
+    @@index([createdAt])
+    @@map("visits")
+}
+
+// ======================
+// WYPŁATY
+// ======================
+
+model Payout {
+    id          String       @id @default(cuid())
+    userId      String       @map("user_id")
+    
+    amount      Decimal      @db.Decimal(10, 4)
+    
+    method      PayoutMethod
+    address     String
+    
+    status      PayoutStatus @default(PENDING)
+    
+    createdAt   DateTime     @default(now()) @map("created_at")
+    processedAt DateTime?    @map("processed_at")
+    
+    user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+    
+    @@index([userId])
+    @@index([status])
+    @@map("payouts")
+}
+
+// ======================
+// WIADOMOŚCI KONTAKTOWE
+// ======================
+
+model ContactMessage {
+    id          String   @id @default(cuid())
+    
+    name        String
+    email       String
+    subject     String
+    message     String
+    
+    isRead      Boolean  @default(false) @map("is_read")
+    
+    createdAt   DateTime @default(now()) @map("created_at")
+    
+    @@index([isRead])
+    @@index([createdAt])
+    @@map("contact_messages")
+}
+
+// ======================
+// ENUMY
+// ======================
+
+enum PayoutMethod {
+    PAYPAL
+    BITCOIN
+    BANK_TRANSFER
+}
+
+enum PayoutStatus {
+    PENDING
+    PROCESSING
+    COMPLETED
+    REJECTED
+}
