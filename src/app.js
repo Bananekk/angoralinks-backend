@@ -24,7 +24,8 @@ app.use(helmet());
 app.use(cors({
     origin: [
         'http://localhost:5173',
-        'https://angoralinks-frontend.vercel.app'
+        'http://localhost:3000',
+        'https://angoralinks.vercel.app'
     ],
     credentials: true
 }));
