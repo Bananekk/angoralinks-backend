@@ -1,18 +1,24 @@
-const { Resend } = require('resend');
+const nodemailer = require('nodemailer');
 
 class EmailService {
     constructor() {
-        this.resend = null;
-        this.fromEmail = 'AngoraLinks <onboarding@resend.dev>'; // Zmień po dodaniu domeny
-        this.initResend();
+        this.transporter = null;
+        this.fromEmail = 'AngoraLinks <angora.linx@gmail.com>';
+        this.initGmail();
     }
 
-    initResend() {
-        if (process.env.RESEND_API_KEY) {
-            this.resend = new Resend(process.env.RESEND_API_KEY);
-            console.log('✅ Resend skonfigurowany');
+    initGmail() {
+        if (process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD) {
+            this.transporter = nodemailer.createTransport({
+                service: 'gmail',
+                auth: {
+                    user: process.env.GMAIL_USER,
+                    pass: process.env.GMAIL_APP_PASSWORD
+                }
+            });
+            console.log('✅ Gmail SMTP skonfigurowany');
         } else {
-            console.warn('⚠️ RESEND_API_KEY nie ustawiony - email wyłączony');
+            console.warn('⚠️ Gmail nie skonfigurowany - email wyłączony');
         }
     }
 
@@ -23,13 +29,13 @@ class EmailService {
 
     // Wyślij email z kodem weryfikacyjnym
     async sendVerificationCode(email, code) {
-        if (!this.resend) {
+        if (!this.transporter) {
             console.warn('Email nie skonfigurowany - pomijam wysyłkę');
             return true;
         }
 
         try {
-            const { data, error } = await this.resend.emails.send({
+            const info = await this.transporter.sendMail({
                 from: this.fromEmail,
                 to: email,
                 subject: 'Kod weryfikacyjny - AngoraLinks',
@@ -69,12 +75,7 @@ class EmailService {
                 `
             });
 
-            if (error) {
-                console.error('Błąd Resend:', error);
-                return false;
-            }
-
-            console.log(`✅ Email weryfikacyjny wysłany do: ${email}, ID: ${data.id}`);
+            console.log(`✅ Email weryfikacyjny wysłany do: ${email}, ID: ${info.messageId}`);
             return true;
 
         } catch (error) {
@@ -85,10 +86,10 @@ class EmailService {
 
     // Wyślij email powitalny
     async sendWelcomeEmail(email) {
-        if (!this.resend) return true;
+        if (!this.transporter) return true;
 
         try {
-            const { error } = await this.resend.emails.send({
+            await this.transporter.sendMail({
                 from: this.fromEmail,
                 to: email,
                 subject: 'Witaj w AngoraLinks! 🎉',
@@ -134,11 +135,6 @@ class EmailService {
                 `
             });
 
-            if (error) {
-                console.error('Błąd welcome email:', error);
-                return false;
-            }
-
             return true;
         } catch (error) {
             console.error('Błąd wysyłania welcome email:', error);
@@ -148,10 +144,10 @@ class EmailService {
 
     // Potwierdzenie kontaktu
     async sendContactConfirmation(email, name, subject) {
-        if (!this.resend) return true;
+        if (!this.transporter) return true;
 
         try {
-            const { error } = await this.resend.emails.send({
+            await this.transporter.sendMail({
                 from: this.fromEmail,
                 to: email,
                 subject: 'Otrzymaliśmy Twoją wiadomość - AngoraLinks',
@@ -192,11 +188,6 @@ class EmailService {
                 `
             });
 
-            if (error) {
-                console.error('Błąd contact email:', error);
-                return false;
-            }
-
             console.log(`✅ Potwierdzenie kontaktu wysłane do: ${email}`);
             return true;
         } catch (error) {
@@ -207,10 +198,10 @@ class EmailService {
 
     // Powiadomienie o przeczytaniu
     async sendMessageReadNotification(email, name, subject) {
-        if (!this.resend) return true;
+        if (!this.transporter) return true;
 
         try {
-            const { error } = await this.resend.emails.send({
+            await this.transporter.sendMail({
                 from: this.fromEmail,
                 to: email,
                 subject: 'Twoja wiadomość została przeczytana - AngoraLinks',
@@ -254,7 +245,6 @@ class EmailService {
                 `
             });
 
-            if (error) return false;
             console.log(`✅ Powiadomienie o przeczytaniu wysłane do: ${email}`);
             return true;
         } catch (error) {
