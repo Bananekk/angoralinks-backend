@@ -136,13 +136,14 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`
     ====================================
     🚀 Serwer uruchomiony!
-    📍 http://localhost:${PORT}
-    📍 Health: http://localhost:${PORT}/health
-    📍 API: http://localhost:${PORT}/api
+    📍 Port: ${PORT}
+    📍 Host: 0.0.0.0
+    📍 Health: /health
+    📍 API: /api
     ====================================
     `);
 });
