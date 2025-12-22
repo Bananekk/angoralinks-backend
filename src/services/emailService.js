@@ -1,46 +1,31 @@
-const nodemailer = require('nodemailer');
+const sgMail = require('@sendgrid/mail');
 
 class EmailService {
     constructor() {
-        this.transporter = null;
-        this.fromEmail = 'AngoraLinks <angora.linx@gmail.com>';
-        this.initGmail();
+        this.initialized = false;
+        this.fromEmail = 'angora.linx@gmail.com';
+        this.fromName = 'AngoraLinks';
+        this.init();
     }
 
-    initGmail() {
-        console.log('🔧 Inicjalizacja Gmail SMTP...');
+    init() {
+        console.log('🔧 Inicjalizacja SendGrid...');
 
-        const user = process.env.GMAIL_USER;
-        const pass = process.env.GMAIL_APP_PASSWORD;
+        const apiKey = process.env.SENDGRID_API_KEY;
 
-        console.log('GMAIL_USER:', user ? `✅ ${user}` : '❌ BRAK');
-        console.log('GMAIL_APP_PASSWORD:', pass ? '✅ ustawione (ukryte)' : '❌ BRAK');
+        console.log('SENDGRID_API_KEY:', apiKey ? '✅ ustawione' : '❌ BRAK');
 
-        if (!user || !pass) {
-            console.warn('⚠️ Gmail SMTP nie skonfigurowany - email wyłączony');
+        if (!apiKey) {
+            console.warn('⚠️ SendGrid nie skonfigurowany - email wyłączony');
             return;
         }
 
         try {
-            this.transporter = nodemailer.createTransport({
-                service: 'gmail',
-                auth: {
-                    user: user,
-                    pass: pass  // App Password (16 znaków)
-                }
-            });
-
-            // Weryfikacja połączenia
-            this.transporter.verify((error, success) => {
-                if (error) {
-                    console.error('❌ Gmail SMTP błąd:', error.message);
-                } else {
-                    console.log('✅ Gmail SMTP gotowy do wysyłania!');
-                }
-            });
-
+            sgMail.setApiKey(apiKey);
+            this.initialized = true;
+            console.log('✅ SendGrid gotowy do wysyłania!');
         } catch (error) {
-            console.error('❌ Błąd inicjalizacji Gmail:', error.message);
+            console.error('❌ Błąd inicjalizacji SendGrid:', error.message);
         }
     }
 
@@ -51,17 +36,20 @@ class EmailService {
     async sendVerificationCode(email, code) {
         console.log(`📧 Próba wysłania kodu do: ${email}`);
 
-        if (!this.transporter) {
+        if (!this.initialized) {
             console.warn('❌ Email nie skonfigurowany - pomijam wysyłkę');
             return true;
         }
 
         try {
-            console.log('📤 Wysyłam email...');
+            console.log('📤 Wysyłam email przez SendGrid...');
 
-            const info = await this.transporter.sendMail({
-                from: this.fromEmail,
+            await sgMail.send({
                 to: email,
+                from: {
+                    email: this.fromEmail,
+                    name: this.fromName
+                },
                 subject: 'Kod weryfikacyjny - AngoraLinks',
                 html: `
                     <!DOCTYPE html>
@@ -99,22 +87,28 @@ class EmailService {
                 `
             });
 
-            console.log(`✅ Email wysłany! ID: ${info.messageId}`);
+            console.log(`✅ Email wysłany do: ${email}`);
             return true;
 
         } catch (error) {
             console.error('❌ Błąd wysyłania email:', error.message);
+            if (error.response) {
+                console.error('SendGrid response:', error.response.body);
+            }
             return false;
         }
     }
 
     async sendWelcomeEmail(email) {
-        if (!this.transporter) return true;
+        if (!this.initialized) return true;
 
         try {
-            await this.transporter.sendMail({
-                from: this.fromEmail,
+            await sgMail.send({
                 to: email,
+                from: {
+                    email: this.fromEmail,
+                    name: this.fromName
+                },
                 subject: 'Witaj w AngoraLinks! 🎉',
                 html: `
                     <!DOCTYPE html>
@@ -167,47 +161,24 @@ class EmailService {
     }
 
     async sendContactConfirmation(email, name, subject) {
-        if (!this.transporter) return true;
+        if (!this.initialized) return true;
 
         try {
-            await this.transporter.sendMail({
-                from: this.fromEmail,
+            await sgMail.send({
                 to: email,
+                from: {
+                    email: this.fromEmail,
+                    name: this.fromName
+                },
                 subject: 'Otrzymaliśmy Twoją wiadomość - AngoraLinks',
                 html: `
-                    <!DOCTYPE html>
-                    <html>
-                    <head>
-                        <style>
-                            body { font-family: Arial, sans-serif; background-color: #0f172a; color: #f8fafc; padding: 20px; }
-                            .container { max-width: 500px; margin: 0 auto; background-color: #1e293b; border-radius: 16px; padding: 32px; }
-                            .logo { text-align: center; margin-bottom: 24px; }
-                            .logo span { font-size: 24px; font-weight: bold; color: #0ea5e9; }
-                            .text { color: #94a3b8; line-height: 1.6; }
-                            .info-box { background-color: #0f172a; border-radius: 12px; padding: 16px; margin: 24px 0; }
-                            .footer { text-align: center; margin-top: 24px; color: #64748b; font-size: 12px; }
-                        </style>
-                    </head>
-                    <body>
-                        <div class="container">
-                            <div class="logo">
-                                <span>🔗 AngoraLinks</span>
-                            </div>
-                            <h2 style="text-align: center; color: #22c55e;">📨 Otrzymaliśmy Twoją wiadomość!</h2>
-                            <p class="text">Cześć <strong style="color: #f8fafc;">${name}</strong>!</p>
-                            <p class="text">Dziękujemy za kontakt. Twoja wiadomość została dostarczona.</p>
-                            <div class="info-box">
-                                <p style="color: #64748b; margin: 0;">Temat:</p>
-                                <p style="color: #f8fafc; margin: 4px 0 0 0;"><strong>${subject}</strong></p>
-                            </div>
-                            <p class="text">Odpowiemy w ciągu <strong style="color: #f8fafc;">24-48 godzin</strong>.</p>
-                            <p class="text">Pozdrawiamy,<br><strong style="color: #0ea5e9;">Zespół AngoraLinks</strong></p>
-                            <div class="footer">
-                                &copy; 2024 AngoraLinks. Wszystkie prawa zastrzeżone.
-                            </div>
-                        </div>
-                    </body>
-                    </html>
+                    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+                        <h2>📨 Otrzymaliśmy Twoją wiadomość!</h2>
+                        <p>Cześć <strong>${name}</strong>!</p>
+                        <p>Temat: <strong>${subject}</strong></p>
+                        <p>Odpowiemy w ciągu 24-48 godzin.</p>
+                        <p>Pozdrawiamy,<br>Zespół AngoraLinks</p>
+                    </div>
                 `
             });
 
@@ -220,50 +191,24 @@ class EmailService {
     }
 
     async sendMessageReadNotification(email, name, subject) {
-        if (!this.transporter) return true;
+        if (!this.initialized) return true;
 
         try {
-            await this.transporter.sendMail({
-                from: this.fromEmail,
+            await sgMail.send({
                 to: email,
+                from: {
+                    email: this.fromEmail,
+                    name: this.fromName
+                },
                 subject: 'Twoja wiadomość została przeczytana - AngoraLinks',
                 html: `
-                    <!DOCTYPE html>
-                    <html>
-                    <head>
-                        <style>
-                            body { font-family: Arial, sans-serif; background-color: #0f172a; color: #f8fafc; padding: 20px; }
-                            .container { max-width: 500px; margin: 0 auto; background-color: #1e293b; border-radius: 16px; padding: 32px; }
-                            .logo { text-align: center; margin-bottom: 24px; }
-                            .logo span { font-size: 24px; font-weight: bold; color: #0ea5e9; }
-                            .status-box { background-color: rgba(34, 197, 94, 0.1); border: 1px solid #22c55e; border-radius: 12px; padding: 16px; margin: 24px 0; text-align: center; }
-                            .text { color: #94a3b8; line-height: 1.6; }
-                            .info-box { background-color: #0f172a; border-radius: 12px; padding: 16px; margin: 24px 0; }
-                            .footer { text-align: center; margin-top: 24px; color: #64748b; font-size: 12px; }
-                        </style>
-                    </head>
-                    <body>
-                        <div class="container">
-                            <div class="logo">
-                                <span>🔗 AngoraLinks</span>
-                            </div>
-                            <h2 style="text-align: center;">👀 Wiadomość przeczytana</h2>
-                            <div class="status-box">
-                                <span style="color: #22c55e; font-weight: bold;">✓ Przeczytana przez zespół</span>
-                            </div>
-                            <p class="text">Cześć <strong style="color: #f8fafc;">${name}</strong>!</p>
-                            <p class="text">Twoja wiadomość:</p>
-                            <div class="info-box">
-                                <p style="color: #0ea5e9; margin: 0; font-weight: bold;">"${subject}"</p>
-                            </div>
-                            <p class="text">została przeczytana. Jeśli wymaga odpowiedzi, wkrótce się odezwiemy.</p>
-                            <p class="text">Pozdrawiamy,<br><strong style="color: #0ea5e9;">Zespół AngoraLinks</strong></p>
-                            <div class="footer">
-                                &copy; 2024 AngoraLinks. Wszystkie prawa zastrzeżone.
-                            </div>
-                        </div>
-                    </body>
-                    </html>
+                    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+                        <h2>👀 Wiadomość przeczytana</h2>
+                        <p>Cześć <strong>${name}</strong>!</p>
+                        <p>Twoja wiadomość "<strong>${subject}</strong>" została przeczytana.</p>
+                        <p>Jeśli wymaga odpowiedzi, wkrótce się odezwiemy.</p>
+                        <p>Pozdrawiamy,<br>Zespół AngoraLinks</p>
+                    </div>
                 `
             });
 
