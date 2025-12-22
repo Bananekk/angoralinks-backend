@@ -1,5 +1,4 @@
 const nodemailer = require('nodemailer');
-const { google } = require('googleapis');
 
 class EmailService {
     constructor() {
@@ -8,59 +7,40 @@ class EmailService {
         this.initGmail();
     }
 
-    async initGmail() {
-        console.log('🔧 Inicjalizacja Gmail OAuth2...');
+    initGmail() {
+        console.log('🔧 Inicjalizacja Gmail SMTP...');
 
-        const clientId = process.env.GMAIL_CLIENT_ID;
-        const clientSecret = process.env.GMAIL_CLIENT_SECRET;
-        const refreshToken = process.env.GMAIL_REFRESH_TOKEN;
         const user = process.env.GMAIL_USER;
+        const pass = process.env.GMAIL_APP_PASSWORD;
 
-        console.log('GMAIL_CLIENT_ID:', clientId ? '✅ ustawione' : '❌ BRAK');
-        console.log('GMAIL_CLIENT_SECRET:', clientSecret ? '✅ ustawione' : '❌ BRAK');
-        console.log('GMAIL_REFRESH_TOKEN:', refreshToken ? '✅ ustawione' : '❌ BRAK');
-        console.log('GMAIL_USER:', user || '❌ BRAK');
+        console.log('GMAIL_USER:', user ? `✅ ${user}` : '❌ BRAK');
+        console.log('GMAIL_APP_PASSWORD:', pass ? '✅ ustawione (ukryte)' : '❌ BRAK');
 
-        if (!clientId || !clientSecret || !refreshToken || !user) {
-            console.warn('⚠️ Gmail OAuth2 nie skonfigurowany - email wyłączony');
+        if (!user || !pass) {
+            console.warn('⚠️ Gmail SMTP nie skonfigurowany - email wyłączony');
             return;
         }
 
         try {
-            const oauth2Client = new google.auth.OAuth2(
-                clientId,
-                clientSecret,
-                'https://developers.google.com/oauthplayground'
-            );
-
-            oauth2Client.setCredentials({
-                refresh_token: refreshToken
-            });
-
-            const accessToken = await oauth2Client.getAccessToken();
-
             this.transporter = nodemailer.createTransport({
                 service: 'gmail',
                 auth: {
-                    type: 'OAuth2',
                     user: user,
-                    clientId: clientId,
-                    clientSecret: clientSecret,
-                    refreshToken: refreshToken,
-                    accessToken: accessToken.token
+                    pass: pass  // App Password (16 znaków)
                 }
             });
 
+            // Weryfikacja połączenia
             this.transporter.verify((error, success) => {
                 if (error) {
-                    console.error('❌ Gmail OAuth2 błąd:', error.message);
+                    console.error('❌ Gmail SMTP błąd:', error.message);
                 } else {
-                    console.log('✅ Gmail OAuth2 gotowy do wysyłania');
+                    console.log('✅ Gmail SMTP gotowy do wysyłania!');
                 }
             });
 
         } catch (error) {
-            console.error('❌ Błąd inicjalizacji Gmail OAuth2:', error.message);
+            console.error('❌ Błąd inicjalizacji Gmail:', error.message);
         }
     }
 
