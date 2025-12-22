@@ -8,33 +8,51 @@ class EmailService {
     }
 
     initGmail() {
+        console.log('🔧 Inicjalizacja Gmail...');
+        console.log('GMAIL_USER:', process.env.GMAIL_USER || '❌ BRAK');
+        console.log('GMAIL_APP_PASSWORD:', process.env.GMAIL_APP_PASSWORD ? '✅ ustawione (' + process.env.GMAIL_APP_PASSWORD.length + ' znaków)' : '❌ BRAK');
+
         if (process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD) {
             this.transporter = nodemailer.createTransport({
                 service: 'gmail',
                 auth: {
                     user: process.env.GMAIL_USER,
                     pass: process.env.GMAIL_APP_PASSWORD
+                },
+                debug: true,
+                logger: true
+            });
+
+            // Test połączenia
+            this.transporter.verify((error, success) => {
+                if (error) {
+                    console.error('❌ Gmail SMTP błąd połączenia:', error.message);
+                } else {
+                    console.log('✅ Gmail SMTP gotowy do wysyłania');
                 }
             });
+
             console.log('✅ Gmail SMTP skonfigurowany');
         } else {
             console.warn('⚠️ Gmail nie skonfigurowany - email wyłączony');
         }
     }
 
-    // Generuj 6-cyfrowy kod
     generateCode() {
         return Math.floor(100000 + Math.random() * 900000).toString();
     }
 
-    // Wyślij email z kodem weryfikacyjnym
     async sendVerificationCode(email, code) {
+        console.log(`📧 Próba wysłania kodu do: ${email}`);
+
         if (!this.transporter) {
-            console.warn('Email nie skonfigurowany - pomijam wysyłkę');
+            console.warn('❌ Email nie skonfigurowany - pomijam wysyłkę');
             return true;
         }
 
         try {
+            console.log('📤 Wysyłam email...');
+
             const info = await this.transporter.sendMail({
                 from: this.fromEmail,
                 to: email,
@@ -75,16 +93,17 @@ class EmailService {
                 `
             });
 
-            console.log(`✅ Email weryfikacyjny wysłany do: ${email}, ID: ${info.messageId}`);
+            console.log(`✅ Email wysłany! ID: ${info.messageId}`);
             return true;
 
         } catch (error) {
-            console.error('Błąd wysyłania email:', error);
+            console.error('❌ Błąd wysyłania email:', error.message);
+            console.error('❌ Kod błędu:', error.code);
+            console.error('❌ Pełny błąd:', JSON.stringify(error, null, 2));
             return false;
         }
     }
 
-    // Wyślij email powitalny
     async sendWelcomeEmail(email) {
         if (!this.transporter) return true;
 
@@ -135,14 +154,14 @@ class EmailService {
                 `
             });
 
+            console.log(`✅ Welcome email wysłany do: ${email}`);
             return true;
         } catch (error) {
-            console.error('Błąd wysyłania welcome email:', error);
+            console.error('❌ Błąd welcome email:', error.message);
             return false;
         }
     }
 
-    // Potwierdzenie kontaktu
     async sendContactConfirmation(email, name, subject) {
         if (!this.transporter) return true;
 
@@ -191,12 +210,11 @@ class EmailService {
             console.log(`✅ Potwierdzenie kontaktu wysłane do: ${email}`);
             return true;
         } catch (error) {
-            console.error('Błąd wysyłania potwierdzenia:', error);
+            console.error('❌ Błąd kontakt email:', error.message);
             return false;
         }
     }
 
-    // Powiadomienie o przeczytaniu
     async sendMessageReadNotification(email, name, subject) {
         if (!this.transporter) return true;
 
@@ -248,7 +266,7 @@ class EmailService {
             console.log(`✅ Powiadomienie o przeczytaniu wysłane do: ${email}`);
             return true;
         } catch (error) {
-            console.error('Błąd wysyłania powiadomienia:', error);
+            console.error('❌ Błąd powiadomienie email:', error.message);
             return false;
         }
     }
