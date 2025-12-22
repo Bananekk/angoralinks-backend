@@ -3,15 +3,10 @@ const cors = require('cors');
 const helmet = require('helmet');
 const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
-const adminRoutes = require('./routes/adminRoutes');
-const profileRoutes = require('./routes/profileRoutes');
-const payoutRoutes = require('./routes/payoutRoutes'); // DODANE
-const contactRoutes = require('./routes/contactRoutes');
 require('dotenv').config();
 
 const app = express();
 app.set('trust proxy', 1);
-
 
 // ======================
 // MIDDLEWARE BEZPIECZEŃSTWA
@@ -29,6 +24,7 @@ app.use(cors({
     ],
     credentials: true
 }));
+
 // Rate limiting - ochrona przed DDoS
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minut
@@ -56,30 +52,35 @@ const authRoutes = require('./routes/authRoutes');
 const linkRoutes = require('./routes/linkRoutes');
 const redirectRoutes = require('./routes/redirectRoutes');
 const statsRoutes = require('./routes/statsRoutes');
+const adminRoutes = require('./routes/adminRoutes');
+const profileRoutes = require('./routes/profileRoutes');
+const payoutRoutes = require('./routes/payoutRoutes');
+const contactRoutes = require('./routes/contactRoutes');
+const cpmRoutes = require('./routes/cpmRoutes'); // 🔥 NOWE
 
 // Health check
 app.get('/health', (req, res) => {
-    const { debugDB } = require('./utils/memoryDB');
     res.status(200).json({
         status: 'ok',
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
-        database: 'memory (temporary)',
-        stats: debugDB()
+        database: 'PostgreSQL (Supabase)',
+        version: '1.1.0'
     });
 });
 
 // Główna strona API
 app.get('/api', (req, res) => {
     res.json({
-        message: 'Linkvertise Clone API',
-        version: '1.0.0',
+        message: 'AngoraLinks API',
+        version: '1.1.0',
         endpoints: {
             health: '/health',
             auth: '/api/auth/*',
             links: '/api/links/*',
             stats: '/api/stats/*',
-            payouts: '/api/payouts/*' // DODANE
+            payouts: '/api/payouts/*',
+            cpm: '/api/cpm/*' // 🔥 NOWE
         }
     });
 });
@@ -102,11 +103,14 @@ app.use('/api/admin', adminRoutes);
 // Profile routes
 app.use('/api/profile', profileRoutes);
 
-// Payout routes - DODANE
+// Payout routes
 app.use('/api/payouts', payoutRoutes);
 
 // Contact routes (publiczny)
 app.use('/api/contact', contactRoutes);
+
+// 🔥 CPM routes (NOWE)
+app.use('/api/cpm', cpmRoutes);
 
 // ======================
 // OBSŁUGA BŁĘDÓW
@@ -143,9 +147,10 @@ console.log(`📍 Używany PORT: ${PORT}`);
 
 const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('====================================');
-    console.log('🚀 Serwer uruchomiony!');
+    console.log('🚀 AngoraLinks API uruchomiony!');
     console.log(`📍 Port: ${PORT}`);
     console.log(`📍 Host: 0.0.0.0`);
+    console.log(`📍 Wersja: 1.1.0`);
     console.log('====================================');
 });
 

@@ -87,4 +87,43 @@ const optionalAuth = async (req, res, next) => {
     }
 };
 
-module.exports = { authenticate, optionalAuth };
+// 🔥 NOWY MIDDLEWARE - Wymagaj uprawnień admina
+const requireAdmin = (req, res, next) => {
+    if (!req.user) {
+        return res.status(401).json({
+            error: 'Wymagane zalogowanie'
+        });
+    }
+
+    if (!req.user.isAdmin) {
+        return res.status(403).json({
+            error: 'Brak uprawnień administratora'
+        });
+    }
+
+    next();
+};
+
+// Middleware sprawdzający tylko czy zweryfikowany email
+const requireVerified = (req, res, next) => {
+    if (!req.user) {
+        return res.status(401).json({
+            error: 'Wymagane zalogowanie'
+        });
+    }
+
+    if (!req.user.isVerified) {
+        return res.status(403).json({
+            error: 'Wymagana weryfikacja adresu email'
+        });
+    }
+
+    next();
+};
+
+module.exports = { 
+    authenticate, 
+    optionalAuth, 
+    requireAdmin,
+    requireVerified 
+};

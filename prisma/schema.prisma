@@ -158,6 +158,71 @@ model ContactMessage {
 }
 
 // ======================
+// SYSTEM CPM - STAWKI
+// ======================
+
+model CpmRate {
+    id          String   @id @default(cuid())
+    
+    // Identyfikacja kraju
+    countryCode String   @unique @map("country_code")  // np. "US", "PL", "DE"
+    countryName String   @map("country_name")          // np. "United States", "Poland"
+    
+    // Tier i stawka
+    tier        Int      @default(3)                    // 1 = premium, 2 = good, 3 = other
+    cpmRate     Decimal  @map("cpm_rate") @db.Decimal(10, 4)  // stawka brutto za 1000 wyświetleń
+    
+    // Status
+    isActive    Boolean  @default(true) @map("is_active")
+    
+    // Audyt
+    updatedAt   DateTime @updatedAt @map("updated_at")
+    updatedBy   String?  @map("updated_by")            // ID admina który aktualizował
+    
+    @@index([tier])
+    @@index([isActive])
+    @@map("cpm_rates")
+}
+
+// ======================
+// USTAWIENIA PLATFORMY
+// ======================
+
+model PlatformSettings {
+    id           String   @id @default(cuid())
+    
+    settingKey   String   @unique @map("setting_key")   // np. "platform_commission", "min_payout"
+    settingValue String   @map("setting_value")         // wartość jako string
+    description  String?                                 // opis ustawienia
+    
+    // Audyt
+    updatedAt    DateTime @updatedAt @map("updated_at")
+    updatedBy    String?  @map("updated_by")
+    
+    @@map("platform_settings")
+}
+
+// ======================
+// HISTORIA ZMIAN STAWEK CPM
+// ======================
+
+model CpmRateHistory {
+    id          String   @id @default(cuid())
+    
+    countryCode String   @map("country_code")
+    oldRate     Decimal  @map("old_rate") @db.Decimal(10, 4)
+    newRate     Decimal  @map("new_rate") @db.Decimal(10, 4)
+    
+    // Audyt
+    changedBy   String   @map("changed_by")            // ID admina
+    changedAt   DateTime @default(now()) @map("changed_at")
+    
+    @@index([countryCode])
+    @@index([changedAt])
+    @@map("cpm_rate_history")
+}
+
+// ======================
 // ENUMY
 // ======================
 
