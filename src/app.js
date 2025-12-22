@@ -136,16 +136,20 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`
-    ====================================
-    🚀 Serwer uruchomiony!
-    📍 Port: ${PORT}
-    📍 Host: 0.0.0.0
-    📍 Health: /health
-    📍 API: /api
-    ====================================
-    `);
+console.log('🔧 Przygotowanie do uruchomienia...');
+console.log(`📍 PORT z env: ${process.env.PORT}`);
+console.log(`📍 Używany PORT: ${PORT}`);
+
+const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log('====================================');
+    console.log('🚀 Serwer uruchomiony!');
+    console.log(`📍 Port: ${PORT}`);
+    console.log(`📍 Host: 0.0.0.0`);
+    console.log('====================================');
+});
+
+server.on('error', (err) => {
+    console.error('❌ Błąd serwera:', err);
 });
 
 module.exports = app;
