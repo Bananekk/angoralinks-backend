@@ -22,8 +22,8 @@ const verifyToken = async (req, res, next) => {
                 isActive: true, 
                 isAdmin: true, 
                 email: true,
-                username: true,
-                balance: true
+                balance: true,
+                totalEarned: true
             }
         });
         
@@ -36,9 +36,9 @@ const verifyToken = async (req, res, next) => {
         }
         
         // ✅ Ustawia OBA formaty dla pełnej kompatybilności
-        req.userId = user.id;      // Dla plików używających req.userId
-        req.isAdmin = user.isAdmin; // Dla sprawdzania admina
-        req.user = user;            // 🔥 Dla kontrolerów używających req.user.id
+        req.userId = user.id;
+        req.isAdmin = user.isAdmin;
+        req.user = user;
         
         next();
     } catch (error) {
@@ -63,11 +63,8 @@ const isAdmin = (req, res, next) => {
 
 // Eksportuj pod WSZYSTKIMI nazwami dla kompatybilności
 module.exports = { 
-    // Główne nazwy
     verifyToken, 
     isAdmin,
-    
-    // Aliasy dla kompatybilności wstecznej
     auth: verifyToken,
     authenticate: verifyToken,
     requireAdmin: isAdmin
