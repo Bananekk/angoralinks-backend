@@ -8,7 +8,11 @@ const transporter = nodemailer.createTransport({
     auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS
-    }
+    },
+    // Timeout 15 sekund
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 15000
 });
 
 /**
@@ -18,7 +22,7 @@ async function sendVerificationEmail(email, token) {
     const verificationUrl = `${process.env.FRONTEND_URL}/verify/${token}`;
     
     const mailOptions = {
-        from: process.env.EMAIL_FROM || 'AngoraLinks <noreply@angoralinks.com>',
+        from: process.env.EMAIL_FROM || 'AngoraLinks <angora.linx@gmail.com>',
         to: email,
         subject: 'Zweryfikuj swoje konto - AngoraLinks',
         html: `
@@ -55,7 +59,7 @@ async function sendPasswordResetEmail(email, token) {
     const resetUrl = `${process.env.FRONTEND_URL}/reset-password/${token}`;
     
     const mailOptions = {
-        from: process.env.EMAIL_FROM || 'AngoraLinks <noreply@angoralinks.com>',
+        from: process.env.EMAIL_FROM || 'AngoraLinks <angora.linx@gmail.com>',
         to: email,
         subject: 'Reset hasła - AngoraLinks',
         html: `
@@ -97,7 +101,7 @@ async function sendPayoutNotification(email, amount, status, method) {
     };
     
     const mailOptions = {
-        from: process.env.EMAIL_FROM || 'AngoraLinks <noreply@angoralinks.com>',
+        from: process.env.EMAIL_FROM || 'AngoraLinks <angora.linx@gmail.com>',
         to: email,
         subject: `Wypłata ${statusText[status] || status} - AngoraLinks`,
         html: `
