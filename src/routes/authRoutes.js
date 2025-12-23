@@ -62,7 +62,7 @@ router.post('/register', async (req, res) => {
         }
         
         const hashedPassword = await bcrypt.hash(password, 12);
-        const verificationCode = generateVerificationCode(); // ← 6-cyfrowy kod
+        const verificationCode = generateVerificationCode();
         const clientIp = getClientIp(req);
         const userAgent = getUserAgent(req);
         const encryptedIp = encrypt(clientIp);
@@ -242,6 +242,7 @@ router.post('/verify', async (req, res) => {
             });
         }
         
+        // Zweryfikuj użytkownika
         await prisma.user.update({
             where: { id: user.id },
             data: {
@@ -251,9 +252,28 @@ router.post('/verify', async (req, res) => {
             }
         });
         
+        // Wygeneruj token JWT (automatyczne logowanie)
+        const token = jwt.sign(
+            { 
+                userId: user.id, 
+                email: user.email,
+                isAdmin: user.isAdmin 
+            },
+            process.env.JWT_SECRET,
+            { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+        );
+        
         res.json({
             success: true,
-            message: 'Email został zweryfikowany. Możesz się teraz zalogować.'
+            message: 'Email został zweryfikowany!',
+            token,
+            user: {
+                id: user.id,
+                email: user.email,
+                isAdmin: user.isAdmin,
+                balance: parseFloat(user.balance) || 0,
+                totalEarned: parseFloat(user.totalEarned) || 0
+            }
         });
         
     } catch (error) {
@@ -307,7 +327,62 @@ router.get('/verify/:token', async (req, res) => {
 });
 
 // =====================================
-// POST /api/auth/resend-verification - Wyślij ponownie email
+// POST /api/auth/resend-code - Wyślij ponownie kod
+// =====================================
+router.post('/resend-code', async (req, res) => {
+    try {
+        const { email } = req.body;
+        
+        if (!email) {
+            return res.status(400).json({ error: 'Email jest wymagany' });
+        }
+        
+        const user = await prisma.user.findUnique({
+            where: { email: email.toLowerCase() }
+        });
+        
+        if (!user) {
+            return res.json({ 
+                success: true, 
+                message: 'Jeśli konto istnieje, kod został wysłany' 
+            });
+        }
+        
+        if (user.isVerified) {
+            return res.status(400).json({ 
+                error: 'Konto jest już zweryfikowane' 
+            });
+        }
+        
+        const verificationCode = generateVerificationCode();
+        
+        await prisma.user.update({
+            where: { id: user.id },
+            data: {
+                verification_code: verificationCode,
+                verification_expires: new Date(Date.now() + 24 * 60 * 60 * 1000)
+            }
+        });
+        
+        try {
+            await sendVerificationEmail(email, verificationCode);
+        } catch (emailError) {
+            console.error('Błąd wysyłania emaila:', emailError.message);
+        }
+        
+        res.json({
+            success: true,
+            message: 'Nowy kod weryfikacyjny został wysłany'
+        });
+        
+    } catch (error) {
+        console.error('Błąd resend-code:', error);
+        res.status(500).json({ error: 'Błąd serwera' });
+    }
+});
+
+// =====================================
+// POST /api/auth/resend-verification - Alias (zachowane dla kompatybilności)
 // =====================================
 router.post('/resend-verification', async (req, res) => {
     try {
@@ -334,7 +409,7 @@ router.post('/resend-verification', async (req, res) => {
             });
         }
         
-        const verificationCode = generateVerificationCode(); // ← 6-cyfrowy kod
+        const verificationCode = generateVerificationCode();
         
         await prisma.user.update({
             where: { id: user.id },
