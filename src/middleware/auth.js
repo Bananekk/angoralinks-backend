@@ -17,7 +17,14 @@ const verifyToken = async (req, res, next) => {
         
         const user = await prisma.user.findUnique({
             where: { id: decoded.userId },
-            select: { id: true, isActive: true, isAdmin: true }
+            select: { 
+                id: true, 
+                isActive: true, 
+                isAdmin: true, 
+                email: true,
+                username: true,
+                balance: true
+            }
         });
         
         if (!user) {
@@ -28,8 +35,10 @@ const verifyToken = async (req, res, next) => {
             return res.status(403).json({ error: 'Konto zostało zablokowane' });
         }
         
-        req.userId = decoded.userId;
-        req.isAdmin = user.isAdmin;
+        // ✅ Ustawia OBA formaty dla pełnej kompatybilności
+        req.userId = user.id;      // Dla plików używających req.userId
+        req.isAdmin = user.isAdmin; // Dla sprawdzania admina
+        req.user = user;            // 🔥 Dla kontrolerów używających req.user.id
         
         next();
     } catch (error) {
@@ -54,11 +63,11 @@ const isAdmin = (req, res, next) => {
 
 // Eksportuj pod WSZYSTKIMI nazwami dla kompatybilności
 module.exports = { 
-    // Nowe nazwy
+    // Główne nazwy
     verifyToken, 
     isAdmin,
     
-    // Stare aliasy (dla kompatybilności)
+    // Aliasy dla kompatybilności wstecznej
     auth: verifyToken,
     authenticate: verifyToken,
     requireAdmin: isAdmin
