@@ -1,11 +1,11 @@
 const express = require('express');
 const { linkController } = require('../controllers/linkController');
-const { authenticate } = require('../middleware/auth');
+const { verifyToken } = require('../middleware/auth');
 
 const router = express.Router();
 
 // Wszystkie endpointy wymagają autoryzacji
-router.use(authenticate);
+router.use(verifyToken);
 
 // CRUD operacje
 router.post('/', linkController.create.bind(linkController));

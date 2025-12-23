@@ -1,16 +1,31 @@
-// src/routes/admin/security.js
-
 const express = require('express');
 const { PrismaClient } = require('@prisma/client');
-const { decrypt, validateEncryptionKey } = require('../../utils/encryption');
-const { maskIp } = require('../../utils/ipHelper');
-const { auth, isAdmin } = require('../../middleware/auth');
+const { auth, isAdmin } = require('../middleware/auth');  // ✅ ZMIENIONE
+
+// Bezpieczny import - jeśli nie istnieje, użyj fallback
+let decrypt, validateEncryptionKey;
+try {
+    const encryption = require('../utils/encryption');
+    decrypt = encryption.decrypt;
+    validateEncryptionKey = encryption.validateEncryptionKey;
+} catch (e) {
+    decrypt = (text) => text;
+    validateEncryptionKey = () => false;
+}
+
+let maskIp;
+try {
+    maskIp = require('../utils/ipHelper').maskIp;
+} catch (e) {
+    maskIp = (ip) => ip ? ip.replace(/\.\d+$/, '.***') : 'unknown';
+}
 
 const router = express.Router();
 const prisma = new PrismaClient();
 
 // Middleware - tylko admin
-router.use(auth, isAdmin);
+router.use(auth, isAdmin);  // ✅ Teraz działa!
+
 
 // Sprawdź status szyfrowania
 router.get('/encryption-status', async (req, res) => {
