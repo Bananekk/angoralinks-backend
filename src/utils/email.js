@@ -1,25 +1,24 @@
 const nodemailer = require('nodemailer');
 
-// 🔍 Debug - sprawdź czy zmienne są załadowane
+// 🔍 Debug
 console.log('========== EMAIL CONFIG DEBUG ==========');
 console.log('📧 SENDGRID_API_KEY exists:', !!process.env.SENDGRID_API_KEY);
 console.log('📧 SENDGRID_API_KEY length:', process.env.SENDGRID_API_KEY?.length || 0);
-console.log('📧 SENDGRID_API_KEY starts with:', process.env.SENDGRID_API_KEY?.substring(0, 10) || 'BRAK');
 console.log('📧 EMAIL_FROM:', process.env.EMAIL_FROM || 'nie ustawiono');
 console.log('=========================================');
 
-// Konfiguracja SendGrid
+// Konfiguracja SendGrid - PORT 465 z SSL
 const transporter = nodemailer.createTransport({
     host: 'smtp.sendgrid.net',
-    port: 587,
-    secure: false,
+    port: 465,
+    secure: true,  // ← Zmiana na true dla portu 465
     auth: {
         user: 'apikey',
         pass: process.env.SENDGRID_API_KEY
     },
-    connectionTimeout: 15000,
-    greetingTimeout: 15000,
-    socketTimeout: 15000
+    connectionTimeout: 30000,
+    greetingTimeout: 30000,
+    socketTimeout: 30000
 });
 
 
