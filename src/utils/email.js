@@ -1,4 +1,4 @@
-const nodemailer = require('nodemailer');
+const sgMail = require('@sendgrid/mail');
 
 // 🔍 Debug
 console.log('========== EMAIL CONFIG DEBUG ==========');
@@ -7,20 +7,10 @@ console.log('📧 SENDGRID_API_KEY length:', process.env.SENDGRID_API_KEY?.lengt
 console.log('📧 EMAIL_FROM:', process.env.EMAIL_FROM || 'nie ustawiono');
 console.log('=========================================');
 
-// Konfiguracja SendGrid - PORT 465 z SSL
-const transporter = nodemailer.createTransport({
-    host: 'smtp.sendgrid.net',
-    port: 465,
-    secure: true,  // ← Zmiana na true dla portu 465
-    auth: {
-        user: 'apikey',
-        pass: process.env.SENDGRID_API_KEY
-    },
-    connectionTimeout: 30000,
-    greetingTimeout: 30000,
-    socketTimeout: 30000
-});
+// Konfiguracja SendGrid API
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
+const DEFAULT_FROM = process.env.EMAIL_FROM || 'AngoraLinks <angora.linx@gmail.com>';
 
 /**
  * Wysyła email weryfikacyjny
@@ -28,9 +18,9 @@ const transporter = nodemailer.createTransport({
 async function sendVerificationEmail(email, token) {
     const verificationUrl = `${process.env.FRONTEND_URL}/verify/${token}`;
     
-    const mailOptions = {
-        from: process.env.EMAIL_FROM || 'AngoraLinks <angora.linx@gmail.com>',
+    const msg = {
         to: email,
+        from: DEFAULT_FROM,
         subject: 'Zweryfikuj swoje konto - AngoraLinks',
         html: `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -50,11 +40,14 @@ async function sendVerificationEmail(email, token) {
     };
     
     try {
-        const result = await transporter.sendMail(mailOptions);
-        console.log(`✅ Email weryfikacyjny wysłany do: ${email} (${result.messageId})`);
+        const result = await sgMail.send(msg);
+        console.log(`✅ Email weryfikacyjny wysłany do: ${email} (status: ${result[0].statusCode})`);
         return true;
     } catch (error) {
         console.error('❌ Błąd wysyłania emaila:', error.message);
+        if (error.response) {
+            console.error('❌ SendGrid error body:', error.response.body);
+        }
         throw error;
     }
 }
@@ -65,9 +58,9 @@ async function sendVerificationEmail(email, token) {
 async function sendPasswordResetEmail(email, token) {
     const resetUrl = `${process.env.FRONTEND_URL}/reset-password/${token}`;
     
-    const mailOptions = {
-        from: process.env.EMAIL_FROM || 'AngoraLinks <angora.linx@gmail.com>',
+    const msg = {
         to: email,
+        from: DEFAULT_FROM,
         subject: 'Reset hasła - AngoraLinks',
         html: `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -88,11 +81,14 @@ async function sendPasswordResetEmail(email, token) {
     };
     
     try {
-        const result = await transporter.sendMail(mailOptions);
-        console.log(`✅ Email resetujący wysłany do: ${email} (${result.messageId})`);
+        const result = await sgMail.send(msg);
+        console.log(`✅ Email resetujący wysłany do: ${email} (status: ${result[0].statusCode})`);
         return true;
     } catch (error) {
         console.error('❌ Błąd wysyłania emaila:', error.message);
+        if (error.response) {
+            console.error('❌ SendGrid error body:', error.response.body);
+        }
         throw error;
     }
 }
@@ -107,9 +103,9 @@ async function sendPayoutNotification(email, amount, status, method) {
         'PROCESSING': 'jest przetwarzana'
     };
     
-    const mailOptions = {
-        from: process.env.EMAIL_FROM || 'AngoraLinks <angora.linx@gmail.com>',
+    const msg = {
         to: email,
+        from: DEFAULT_FROM,
         subject: `Wypłata ${statusText[status] || status} - AngoraLinks`,
         html: `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -126,25 +122,31 @@ async function sendPayoutNotification(email, amount, status, method) {
     };
     
     try {
-        const result = await transporter.sendMail(mailOptions);
-        console.log(`✅ Email o wypłacie wysłany do: ${email} (${result.messageId})`);
+        const result = await sgMail.send(msg);
+        console.log(`✅ Email o wypłacie wysłany do: ${email} (status: ${result[0].statusCode})`);
         return true;
     } catch (error) {
         console.error('❌ Błąd wysyłania emaila:', error.message);
+        if (error.response) {
+            console.error('❌ SendGrid error body:', error.response.body);
+        }
         throw error;
     }
 }
 
 /**
- * Testuje połączenie z serwerem email
+ * Testuje połączenie z SendGrid
  */
 async function testEmailConnection() {
     try {
-        await transporter.verify();
-        console.log('✅ Połączenie z SendGrid działa');
+        // SendGrid API nie ma verify(), więc sprawdzamy czy klucz jest ustawiony
+        if (!process.env.SENDGRID_API_KEY) {
+            throw new Error('SENDGRID_API_KEY nie jest ustawiony');
+        }
+        console.log('✅ SendGrid API skonfigurowany');
         return true;
     } catch (error) {
-        console.error('❌ Błąd połączenia z SendGrid:', error.message);
+        console.error('❌ Błąd konfiguracji SendGrid:', error.message);
         return false;
     }
 }
@@ -153,6 +155,5 @@ module.exports = {
     sendVerificationEmail,
     sendPasswordResetEmail,
     sendPayoutNotification,
-    testEmailConnection,
-    transporter
+    testEmailConnection
 };
