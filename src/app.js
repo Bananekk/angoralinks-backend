@@ -56,7 +56,8 @@ const adminRoutes = require('./routes/adminRoutes');
 const profileRoutes = require('./routes/profileRoutes');
 const payoutRoutes = require('./routes/payoutRoutes');
 const contactRoutes = require('./routes/contactRoutes');
-const cpmRoutes = require('./routes/cpmRoutes'); // 🔥 NOWE
+const cpmRoutes = require('./routes/cpmRoutes');
+const securityRoutes = require('./routes/securityRoutes'); // 🔥 NOWE - Security/IP
 
 // Health check
 app.get('/health', (req, res) => {
@@ -65,7 +66,7 @@ app.get('/health', (req, res) => {
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
         database: 'PostgreSQL (Supabase)',
-        version: '1.1.0'
+        version: '1.2.0'
     });
 });
 
@@ -73,14 +74,15 @@ app.get('/health', (req, res) => {
 app.get('/api', (req, res) => {
     res.json({
         message: 'AngoraLinks API',
-        version: '1.1.0',
+        version: '1.2.0',
         endpoints: {
             health: '/health',
             auth: '/api/auth/*',
             links: '/api/links/*',
             stats: '/api/stats/*',
             payouts: '/api/payouts/*',
-            cpm: '/api/cpm/*' // 🔥 NOWE
+            cpm: '/api/cpm/*',
+            security: '/api/admin/security/*' // 🔥 NOWE
         }
     });
 });
@@ -109,8 +111,11 @@ app.use('/api/payouts', payoutRoutes);
 // Contact routes (publiczny)
 app.use('/api/contact', contactRoutes);
 
-// 🔥 CPM routes (NOWE)
+// CPM routes
 app.use('/api/cpm', cpmRoutes);
+
+// 🔥 Security routes (NOWE - panel bezpieczeństwa IP)
+app.use('/api/admin/security', securityRoutes);
 
 // ======================
 // OBSŁUGA BŁĘDÓW
@@ -150,7 +155,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('🚀 AngoraLinks API uruchomiony!');
     console.log(`📍 Port: ${PORT}`);
     console.log(`📍 Host: 0.0.0.0`);
-    console.log(`📍 Wersja: 1.1.0`);
+    console.log(`📍 Wersja: 1.2.0`);
     console.log('====================================');
 });
 

@@ -1,240 +1,172 @@
 generator client {
-    provider = "prisma-client-js"
+  provider = "prisma-client-js"
 }
 
 datasource db {
-    provider  = "postgresql"
-    url       = env("DATABASE_URL")
-    directUrl = env("DIRECT_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
-
-// ======================
-// UŻYTKOWNICY
-// ======================
 
 model User {
-    id            String   @id @default(cuid())
-    email         String   @unique
-    passwordHash  String   @map("password_hash")
-    
-    // Finanse
-    balance       Decimal  @default(0) @db.Decimal(10, 4)
-    totalEarned   Decimal  @default(0) @map("total_earned") @db.Decimal(10, 4)
-    
-    // Status
-    isVerified    Boolean  @default(false) @map("is_verified")
-    isActive      Boolean  @default(true) @map("is_active")
-    isAdmin       Boolean  @default(false) @map("is_admin")
-    
-    // Weryfikacja email
-    verificationCode   String?   @map("verification_code")
-    verificationExpires DateTime? @map("verification_expires")
-    
-    // Timestamps
-    createdAt     DateTime @default(now()) @map("created_at")
-    updatedAt     DateTime @updatedAt @map("updated_at")
-    
-    // Relacje
-    links         Link[]
-    payouts       Payout[]
-    
-    @@map("users")
-}
+  id                   String    @id @default(cuid())
+  email                String    @unique
+  password_hash        String
+  balance              Decimal   @default(0) @db.Decimal(10, 4)
+  totalEarned          Decimal   @default(0) @map("total_earned") @db.Decimal(10, 4)
+  isVerified           Boolean   @default(false) @map("is_verified")
+  isActive             Boolean   @default(true) @map("is_active")
+  isAdmin              Boolean   @default(false) @map("is_admin")
+  verification_code    String?
+  verification_expires DateTime?
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+  
+  // Nowe pola IP
+  registrationIp       String?   @map("registration_ip")
+  lastLoginIp          String?   @map("last_login_ip")
+  lastLoginAt          DateTime? @map("last_login_at")
+  
+  links                Link[]
+  payouts              Payout[]
+  ipLogs               IpLog[]
 
-// ======================
-// LINKI
-// ======================
+  @@map("users")
+}
 
 model Link {
-    id           String   @id @default(cuid())
-    userId       String   @map("user_id")
-    
-    // URL
-    originalUrl  String   @map("original_url")
-    shortCode    String   @unique @map("short_code")
-    
-    // Metadane
-    title        String?
-    description  String?
-    
-    // Statystyki
-    totalClicks  Int      @default(0) @map("total_clicks")
-    totalEarned  Decimal  @default(0) @map("total_earned") @db.Decimal(10, 4)
-    
-    // Status
-    isActive     Boolean  @default(true) @map("is_active")
-    
-    // Timestamps
-    createdAt    DateTime @default(now()) @map("created_at")
-    updatedAt    DateTime @updatedAt @map("updated_at")
-    
-    // Relacje
-    user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-    visits       Visit[]
-    
-    @@index([userId])
-    @@index([shortCode])
-    @@map("links")
-}
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  originalUrl String   @map("original_url")
+  shortCode   String   @unique @map("short_code")
+  title       String?
+  description String?
+  totalClicks Int      @default(0) @map("total_clicks")
+  totalEarned Decimal  @default(0) @map("total_earned") @db.Decimal(10, 4)
+  is_active   Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updated_at  DateTime @updatedAt
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  visits      Visit[]
 
-// ======================
-// WIZYTY (KLIKNIĘCIA)
-// ======================
+  @@index([userId])
+  @@index([shortCode])
+  @@map("links")
+}
 
 model Visit {
-    id          String   @id @default(cuid())
-    linkId      String   @map("link_id")
-    
-    // Dane odwiedzającego
-    ipAddress   String   @map("ip_address")
-    country     String?
-    city        String?
-    device      String?  // mobile, desktop, tablet
-    browser     String?
-    referer     String?
-    
-    // Zarobek
-    earned      Decimal  @default(0) @db.Decimal(10, 4)
-    
-    // Status
-    completed   Boolean  @default(false) // czy przeszedł przez reklamy
-    
-    // Timestamps
-    createdAt   DateTime @default(now()) @map("created_at")
-    
-    // Relacje
-    link        Link     @relation(fields: [linkId], references: [id], onDelete: Cascade)
-    
-    @@index([linkId])
-    @@index([ipAddress])
-    @@index([createdAt])
-    @@map("visits")
+  id          String   @id @default(cuid())
+  linkId      String   @map("link_id")
+  ip_address  String
+  encryptedIp String?  @map("encrypted_ip")
+  country     String?
+  city        String?
+  device      String?
+  browser     String?
+  userAgent   String?  @map("user_agent")
+  referer     String?
+  earned      Decimal  @default(0) @db.Decimal(10, 4)
+  completed   Boolean  @default(false)
+  createdAt   DateTime @default(now()) @map("created_at")
+  link        Link     @relation(fields: [linkId], references: [id], onDelete: Cascade)
+
+  @@index([linkId])
+  @@index([createdAt])
+  @@index([ip_address])
+  @@map("visits")
 }
-
-// ======================
-// WYPŁATY
-// ======================
-
-model Payout {
-    id          String       @id @default(cuid())
-    userId      String       @map("user_id")
-    
-    amount      Decimal      @db.Decimal(10, 4)
-    
-    method      PayoutMethod
-    address     String
-    
-    status      PayoutStatus @default(PENDING)
-    
-    createdAt   DateTime     @default(now()) @map("created_at")
-    processedAt DateTime?    @map("processed_at")
-    
-    user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-    
-    @@index([userId])
-    @@index([status])
-    @@map("payouts")
-}
-
-// ======================
-// WIADOMOŚCI KONTAKTOWE
-// ======================
-
-model ContactMessage {
-    id          String   @id @default(cuid())
-    
-    name        String
-    email       String
-    subject     String
-    message     String
-    
-    isRead      Boolean  @default(false) @map("is_read")
-    
-    createdAt   DateTime @default(now()) @map("created_at")
-    
-    @@index([isRead])
-    @@index([createdAt])
-    @@map("contact_messages")
-}
-
-// ======================
-// SYSTEM CPM - STAWKI
-// ======================
 
 model CpmRate {
-    id          String   @id @default(cuid())
-    
-    // Identyfikacja kraju
-    countryCode String   @unique @map("country_code")  // np. "US", "PL", "DE"
-    countryName String   @map("country_name")          // np. "United States", "Poland"
-    
-    // Tier i stawka
-    tier        Int      @default(3)                    // 1 = premium, 2 = good, 3 = other
-    cpmRate     Decimal  @map("cpm_rate") @db.Decimal(10, 4)  // stawka brutto za 1000 wyświetleń
-    
-    // Status
-    isActive    Boolean  @default(true) @map("is_active")
-    
-    // Audyt
-    updatedAt   DateTime @updatedAt @map("updated_at")
-    updatedBy   String?  @map("updated_by")            // ID admina który aktualizował
-    
-    @@index([tier])
-    @@index([isActive])
-    @@map("cpm_rates")
+  id          String   @id @default(cuid())
+  countryCode String   @unique @map("country_code")
+  countryName String   @map("country_name")
+  tier        Int      @default(3)
+  cpmRate     Decimal  @map("cpm_rate") @db.Decimal(10, 4)
+  isActive    Boolean  @default(true) @map("is_active")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  updated_by  String?
+
+  @@index([isActive])
+  @@index([tier])
+  @@map("cpm_rates")
 }
 
-// ======================
-// USTAWIENIA PLATFORMY
-// ======================
+model Payout {
+  id          String       @id @default(cuid())
+  userId      String       @map("user_id")
+  amount      Decimal      @db.Decimal(10, 4)
+  method      PayoutMethod
+  address     String
+  status      PayoutStatus @default(PENDING)
+  createdAt   DateTime     @default(now()) @map("created_at")
+  processedAt DateTime?    @map("processed_at")
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@map("payouts")
+}
+
+model ContactMessage {
+  id        String   @id @default(cuid())
+  name      String
+  email     String
+  subject   String
+  message   String
+  isRead    Boolean  @default(false) @map("is_read")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@index([isRead])
+  @@map("contact_messages")
+}
 
 model PlatformSettings {
-    id           String   @id @default(cuid())
-    
-    settingKey   String   @unique @map("setting_key")   // np. "platform_commission", "min_payout"
-    settingValue String   @map("setting_value")         // wartość jako string
-    description  String?                                 // opis ustawienia
-    
-    // Audyt
-    updatedAt    DateTime @updatedAt @map("updated_at")
-    updatedBy    String?  @map("updated_by")
-    
-    @@map("platform_settings")
+  id            String   @id @default(cuid())
+  setting_key   String   @unique
+  setting_value String
+  description   String?
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  updated_by    String?
+
+  @@map("platform_settings")
 }
 
-// ======================
-// HISTORIA ZMIAN STAWEK CPM
-// ======================
+model cpm_rate_history {
+  id           String   @id @default(cuid())
+  country_code String
+  old_rate     Decimal  @db.Decimal(10, 4)
+  new_rate     Decimal  @db.Decimal(10, 4)
+  changed_by   String
+  changed_at   DateTime @default(now())
 
-model CpmRateHistory {
-    id          String   @id @default(cuid())
-    
-    countryCode String   @map("country_code")
-    oldRate     Decimal  @map("old_rate") @db.Decimal(10, 4)
-    newRate     Decimal  @map("new_rate") @db.Decimal(10, 4)
-    
-    // Audyt
-    changedBy   String   @map("changed_by")            // ID admina
-    changedAt   DateTime @default(now()) @map("changed_at")
-    
-    @@index([countryCode])
-    @@index([changedAt])
-    @@map("cpm_rate_history")
+  @@index([changed_at])
+  @@index([country_code])
 }
 
-// ======================
-// ENUMY
-// ======================
+model IpLog {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  encryptedIp String   @map("encrypted_ip")
+  action      String
+  userAgent   String?  @map("user_agent")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([createdAt])
+  @@map("ip_logs")
+}
 
 enum PayoutMethod {
-    PAYPAL
-    BITCOIN
-    BANK_TRANSFER
+  PAYPAL
+  BITCOIN
+  BANK_TRANSFER
 }
 
 enum PayoutStatus {
-    PENDING
-    PROCESSING
-    COMPLETED
-    REJECTED
+  PENDING
+  PROCESSING
+  COMPLETED
+  REJECTED
 }
