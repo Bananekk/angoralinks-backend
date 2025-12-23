@@ -26,6 +26,13 @@ try {
 }
 
 // =====================================
+// Funkcja generująca 6-cyfrowy kod
+// =====================================
+function generateVerificationCode() {
+    return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+// =====================================
 // POST /api/auth/register - Rejestracja
 // =====================================
 router.post('/register', async (req, res) => {
@@ -55,7 +62,7 @@ router.post('/register', async (req, res) => {
         }
         
         const hashedPassword = await bcrypt.hash(password, 12);
-        const verificationCode = crypto.randomBytes(32).toString('hex');
+        const verificationCode = generateVerificationCode(); // ← 6-cyfrowy kod
         const clientIp = getClientIp(req);
         const userAgent = getUserAgent(req);
         const encryptedIp = encrypt(clientIp);
@@ -209,7 +216,56 @@ router.post('/login', async (req, res) => {
 });
 
 // =====================================
-// GET /api/auth/verify/:token - Weryfikacja email
+// POST /api/auth/verify - Weryfikacja kodem 6-cyfrowym
+// =====================================
+router.post('/verify', async (req, res) => {
+    try {
+        const { email, code } = req.body;
+        
+        if (!email || !code) {
+            return res.status(400).json({ 
+                error: 'Email i kod są wymagane' 
+            });
+        }
+        
+        const user = await prisma.user.findFirst({
+            where: { 
+                email: email.toLowerCase(),
+                verification_code: code,
+                verification_expires: { gte: new Date() }
+            }
+        });
+        
+        if (!user) {
+            return res.status(400).json({ 
+                error: 'Nieprawidłowy lub wygasły kod weryfikacyjny' 
+            });
+        }
+        
+        await prisma.user.update({
+            where: { id: user.id },
+            data: {
+                isVerified: true,
+                verification_code: null,
+                verification_expires: null
+            }
+        });
+        
+        res.json({
+            success: true,
+            message: 'Email został zweryfikowany. Możesz się teraz zalogować.'
+        });
+        
+    } catch (error) {
+        console.error('Błąd weryfikacji:', error);
+        res.status(500).json({ 
+            error: 'Błąd serwera podczas weryfikacji' 
+        });
+    }
+});
+
+// =====================================
+// GET /api/auth/verify/:token - Weryfikacja przez link (zachowane dla kompatybilności)
 // =====================================
 router.get('/verify/:token', async (req, res) => {
     try {
@@ -278,7 +334,7 @@ router.post('/resend-verification', async (req, res) => {
             });
         }
         
-        const verificationCode = crypto.randomBytes(32).toString('hex');
+        const verificationCode = generateVerificationCode(); // ← 6-cyfrowy kod
         
         await prisma.user.update({
             where: { id: user.id },
