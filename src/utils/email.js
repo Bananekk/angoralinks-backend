@@ -1,15 +1,14 @@
 const nodemailer = require('nodemailer');
 
-// Konfiguracja transportera email
+// Konfiguracja SendGrid
 const transporter = nodemailer.createTransport({
-    host: process.env.EMAIL_HOST || 'smtp.gmail.com',
-    port: parseInt(process.env.EMAIL_PORT) || 587,
+    host: 'smtp.sendgrid.net',
+    port: 587,
     secure: false,
     auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS
+        user: 'apikey', // dosłownie słowo "apikey" - nie zmieniaj!
+        pass: process.env.SENDGRID_API_KEY
     },
-    // Timeout 15 sekund
     connectionTimeout: 15000,
     greetingTimeout: 15000,
     socketTimeout: 15000
@@ -43,8 +42,8 @@ async function sendVerificationEmail(email, token) {
     };
     
     try {
-        await transporter.sendMail(mailOptions);
-        console.log(`✅ Email weryfikacyjny wysłany do: ${email}`);
+        const result = await transporter.sendMail(mailOptions);
+        console.log(`✅ Email weryfikacyjny wysłany do: ${email} (${result.messageId})`);
         return true;
     } catch (error) {
         console.error('❌ Błąd wysyłania emaila:', error.message);
@@ -81,8 +80,8 @@ async function sendPasswordResetEmail(email, token) {
     };
     
     try {
-        await transporter.sendMail(mailOptions);
-        console.log(`✅ Email resetujący wysłany do: ${email}`);
+        const result = await transporter.sendMail(mailOptions);
+        console.log(`✅ Email resetujący wysłany do: ${email} (${result.messageId})`);
         return true;
     } catch (error) {
         console.error('❌ Błąd wysyłania emaila:', error.message);
@@ -119,7 +118,8 @@ async function sendPayoutNotification(email, amount, status, method) {
     };
     
     try {
-        await transporter.sendMail(mailOptions);
+        const result = await transporter.sendMail(mailOptions);
+        console.log(`✅ Email o wypłacie wysłany do: ${email} (${result.messageId})`);
         return true;
     } catch (error) {
         console.error('❌ Błąd wysyłania emaila:', error.message);
@@ -133,10 +133,10 @@ async function sendPayoutNotification(email, amount, status, method) {
 async function testEmailConnection() {
     try {
         await transporter.verify();
-        console.log('✅ Połączenie z serwerem email działa');
+        console.log('✅ Połączenie z SendGrid działa');
         return true;
     } catch (error) {
-        console.error('❌ Błąd połączenia z serwerem email:', error.message);
+        console.error('❌ Błąd połączenia z SendGrid:', error.message);
         return false;
     }
 }
