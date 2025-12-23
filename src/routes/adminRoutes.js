@@ -2,7 +2,7 @@ const express = require('express');
 const { PrismaClient } = require('@prisma/client');
 const { auth, isAdmin } = require('../middleware/auth');
 
-// Bezpieczny import - jeśli nie istnieje, użyj fallback
+// Bezpieczny import
 let decrypt, validateEncryptionKey;
 try {
     const encryption = require('../utils/encryption');
@@ -30,7 +30,6 @@ router.use(auth, isAdmin);
 // DASHBOARD & STATYSTYKI
 // ======================
 
-// Dashboard - główne statystyki
 router.get('/dashboard', async (req, res) => {
     try {
         const today = new Date();
@@ -66,7 +65,6 @@ router.get('/dashboard', async (req, res) => {
             })
         ]);
 
-        // Statystyki z ostatnich 7 dni
         const last7Days = [];
         for (let i = 6; i >= 0; i--) {
             const date = new Date();
@@ -78,19 +76,13 @@ router.get('/dashboard', async (req, res) => {
             
             const [visits, users, earnings] = await Promise.all([
                 prisma.visit.count({
-                    where: {
-                        createdAt: { gte: date, lt: nextDate }
-                    }
+                    where: { createdAt: { gte: date, lt: nextDate } }
                 }),
                 prisma.user.count({
-                    where: {
-                        createdAt: { gte: date, lt: nextDate }
-                    }
+                    where: { createdAt: { gte: date, lt: nextDate } }
                 }),
                 prisma.visit.aggregate({
-                    where: {
-                        createdAt: { gte: date, lt: nextDate }
-                    },
+                    where: { createdAt: { gte: date, lt: nextDate } },
                     _sum: { earned: true }
                 })
             ]);
@@ -123,35 +115,28 @@ router.get('/dashboard', async (req, res) => {
     }
 });
 
-// Statystyki bezpieczeństwa
 router.get('/stats', async (req, res) => {
     try {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
         
-        const [
-            totalIpLogs,
-            todayIpLogs,
-            loginCount,
-            registerCount,
-            visitsWithIp
-        ] = await Promise.all([
-            prisma.ipLog.count(),
-            prisma.ipLog.count({
-                where: { createdAt: { gte: today } }
-            }),
-            prisma.ipLog.count({
-                where: { action: 'LOGIN' }
-            }),
-            prisma.ipLog.count({
-                where: { action: 'REGISTER' }
-            }),
-            prisma.visit.count({
-                where: { encryptedIp: { not: null } }
-            })
-        ]);
+        let totalIpLogs = 0, todayIpLogs = 0, loginCount = 0, registerCount = 0;
         
-        // Ostatnie 7 dni logowań
+        try {
+            [totalIpLogs, todayIpLogs, loginCount, registerCount] = await Promise.all([
+                prisma.ipLog.count(),
+                prisma.ipLog.count({ where: { createdAt: { gte: today } } }),
+                prisma.ipLog.count({ where: { action: 'LOGIN' } }),
+                prisma.ipLog.count({ where: { action: 'REGISTER' } })
+            ]);
+        } catch (e) {
+            console.log('Model IpLog może nie istnieć');
+        }
+
+        const visitsWithIp = await prisma.visit.count({
+            where: { encryptedIp: { not: null } }
+        }).catch(() => 0);
+        
         const last7Days = [];
         for (let i = 6; i >= 0; i--) {
             const date = new Date();
@@ -161,11 +146,12 @@ router.get('/stats', async (req, res) => {
             const nextDate = new Date(date);
             nextDate.setDate(nextDate.getDate() + 1);
             
-            const count = await prisma.ipLog.count({
-                where: {
-                    createdAt: { gte: date, lt: nextDate }
-                }
-            });
+            let count = 0;
+            try {
+                count = await prisma.ipLog.count({
+                    where: { createdAt: { gte: date, lt: nextDate } }
+                });
+            } catch (e) {}
             
             last7Days.push({
                 date: date.toISOString().split('T')[0],
@@ -186,7 +172,7 @@ router.get('/stats', async (req, res) => {
         });
         
     } catch (error) {
-        console.error('Błąd pobierania statystyk bezpieczeństwa:', error);
+        console.error('Błąd pobierania statystyk:', error);
         res.status(500).json({ success: false, message: 'Błąd serwera' });
     }
 });
@@ -195,7 +181,6 @@ router.get('/stats', async (req, res) => {
 // UŻYTKOWNICY
 // ======================
 
-// Lista użytkowników
 router.get('/users', async (req, res) => {
     try {
         const { page = 1, limit = 20, search = '', status = 'all' } = req.query;
@@ -203,15 +188,10 @@ router.get('/users', async (req, res) => {
 
         let where = {};
         
-        // Filtr wyszukiwania
         if (search) {
-            where.OR = [
-                { email: { contains: search, mode: 'insensitive' } },
-                { username: { contains: search, mode: 'insensitive' } }
-            ];
+            where.email = { contains: search, mode: 'insensitive' };
         }
         
-        // Filtr statusu
         if (status === 'active') {
             where.isActive = true;
         } else if (status === 'blocked') {
@@ -226,14 +206,13 @@ router.get('/users', async (req, res) => {
                 select: {
                     id: true,
                     email: true,
-                    username: true,
                     isActive: true,
                     isAdmin: true,
                     balance: true,
                     totalEarned: true,
+                    isVerified: true,
                     createdAt: true,
                     lastLoginAt: true,
-                    emailVerified: true,
                     _count: {
                         select: { 
                             links: true,
@@ -268,7 +247,6 @@ router.get('/users', async (req, res) => {
     }
 });
 
-// Szczegóły użytkownika
 router.get('/users/:id', async (req, res) => {
     try {
         const { id } = req.params;
@@ -278,22 +256,19 @@ router.get('/users/:id', async (req, res) => {
             select: {
                 id: true,
                 email: true,
-                username: true,
                 isActive: true,
                 isAdmin: true,
                 balance: true,
                 totalEarned: true,
-                totalWithdrawn: true,
+                isVerified: true,
                 createdAt: true,
                 lastLoginAt: true,
-                emailVerified: true,
                 registrationIp: true,
                 lastLoginIp: true,
                 _count: {
                     select: { 
                         links: true,
-                        payouts: true,
-                        visits: true
+                        payouts: true
                     }
                 },
                 links: {
@@ -303,8 +278,8 @@ router.get('/users/:id', async (req, res) => {
                         id: true,
                         shortCode: true,
                         title: true,
-                        clicks: true,
-                        earned: true,
+                        totalClicks: true,
+                        totalEarned: true,
                         createdAt: true
                     }
                 },
@@ -322,19 +297,13 @@ router.get('/users/:id', async (req, res) => {
             });
         }
 
-        // Odszyfruj IP jeśli potrzeba
         let registrationIp = null;
         let lastLoginIp = null;
         
         try {
-            if (user.registrationIp) {
-                registrationIp = decrypt(user.registrationIp);
-            }
-            if (user.lastLoginIp) {
-                lastLoginIp = decrypt(user.lastLoginIp);
-            }
+            if (user.registrationIp) registrationIp = decrypt(user.registrationIp);
+            if (user.lastLoginIp) lastLoginIp = decrypt(user.lastLoginIp);
         } catch (e) {
-            // Jeśli nie można odszyfrować, pokaż zamaskowane
             registrationIp = user.registrationIp ? maskIp(user.registrationIp) : null;
             lastLoginIp = user.lastLoginIp ? maskIp(user.lastLoginIp) : null;
         }
@@ -346,8 +315,7 @@ router.get('/users/:id', async (req, res) => {
                 registrationIp,
                 lastLoginIp,
                 linksCount: user._count.links,
-                payoutsCount: user._count.payouts,
-                visitsCount: user._count.visits
+                payoutsCount: user._count.payouts
             }
         });
     } catch (error) {
@@ -356,38 +324,24 @@ router.get('/users/:id', async (req, res) => {
     }
 });
 
-// Zablokuj/odblokuj użytkownika
 router.patch('/users/:id/toggle-active', async (req, res) => {
     try {
         const { id } = req.params;
 
-        const user = await prisma.user.findUnique({
-            where: { id }
-        });
+        const user = await prisma.user.findUnique({ where: { id } });
 
         if (!user) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Użytkownik nie znaleziony' 
-            });
+            return res.status(404).json({ success: false, message: 'Użytkownik nie znaleziony' });
         }
 
-        // Nie pozwól zablokować samego siebie
         if (id === req.userId) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'Nie możesz zablokować samego siebie' 
-            });
+            return res.status(400).json({ success: false, message: 'Nie możesz zablokować samego siebie' });
         }
 
         const updatedUser = await prisma.user.update({
             where: { id },
             data: { isActive: !user.isActive },
-            select: {
-                id: true,
-                email: true,
-                isActive: true
-            }
+            select: { id: true, email: true, isActive: true }
         });
 
         res.json({
@@ -401,38 +355,24 @@ router.patch('/users/:id/toggle-active', async (req, res) => {
     }
 });
 
-// Nadaj/odbierz uprawnienia admina
 router.patch('/users/:id/toggle-admin', async (req, res) => {
     try {
         const { id } = req.params;
 
-        const user = await prisma.user.findUnique({
-            where: { id }
-        });
+        const user = await prisma.user.findUnique({ where: { id } });
 
         if (!user) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Użytkownik nie znaleziony' 
-            });
+            return res.status(404).json({ success: false, message: 'Użytkownik nie znaleziony' });
         }
 
-        // Nie pozwól odebrać sobie uprawnień
         if (id === req.userId) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'Nie możesz odebrać sobie uprawnień admina' 
-            });
+            return res.status(400).json({ success: false, message: 'Nie możesz odebrać sobie uprawnień admina' });
         }
 
         const updatedUser = await prisma.user.update({
             where: { id },
             data: { isAdmin: !user.isAdmin },
-            select: {
-                id: true,
-                email: true,
-                isAdmin: true
-            }
+            select: { id: true, email: true, isAdmin: true }
         });
 
         res.json({
@@ -446,43 +386,28 @@ router.patch('/users/:id/toggle-admin', async (req, res) => {
     }
 });
 
-// Usuń użytkownika
 router.delete('/users/:id', async (req, res) => {
     try {
         const { id } = req.params;
 
-        // Nie pozwól usunąć samego siebie
         if (id === req.userId) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'Nie możesz usunąć samego siebie' 
-            });
+            return res.status(400).json({ success: false, message: 'Nie możesz usunąć samego siebie' });
         }
 
-        const user = await prisma.user.findUnique({
-            where: { id }
-        });
+        const user = await prisma.user.findUnique({ where: { id } });
 
         if (!user) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Użytkownik nie znaleziony' 
-            });
+            return res.status(404).json({ success: false, message: 'Użytkownik nie znaleziony' });
         }
 
-        // Usuń powiązane dane (kaskadowo)
         await prisma.$transaction([
             prisma.visit.deleteMany({ where: { link: { userId: id } } }),
             prisma.link.deleteMany({ where: { userId: id } }),
             prisma.payout.deleteMany({ where: { userId: id } }),
-            prisma.ipLog.deleteMany({ where: { userId: id } }),
             prisma.user.delete({ where: { id } })
         ]);
 
-        res.json({
-            success: true,
-            message: 'Użytkownik i wszystkie jego dane zostały usunięte'
-        });
+        res.json({ success: true, message: 'Użytkownik i wszystkie jego dane zostały usunięte' });
     } catch (error) {
         console.error('Błąd usuwania użytkownika:', error);
         res.status(500).json({ success: false, message: 'Błąd serwera' });
@@ -493,7 +418,6 @@ router.delete('/users/:id', async (req, res) => {
 // LINKI
 // ======================
 
-// Lista wszystkich linków
 router.get('/links', async (req, res) => {
     try {
         const { page = 1, limit = 20, search = '', userId = '' } = req.query;
@@ -518,11 +442,7 @@ router.get('/links', async (req, res) => {
                 where,
                 include: {
                     user: {
-                        select: { 
-                            id: true,
-                            email: true, 
-                            username: true 
-                        }
+                        select: { id: true, email: true }
                     },
                     _count: {
                         select: { visits: true }
@@ -542,8 +462,8 @@ router.get('/links', async (req, res) => {
                 shortCode: link.shortCode,
                 originalUrl: link.originalUrl,
                 title: link.title,
-                clicks: link.clicks,
-                earned: link.earned,
+                totalClicks: link.totalClicks,
+                totalEarned: link.totalEarned,
                 isActive: link.isActive,
                 createdAt: link.createdAt,
                 user: link.user,
@@ -562,7 +482,6 @@ router.get('/links', async (req, res) => {
     }
 });
 
-// Szczegóły linku
 router.get('/links/:id', async (req, res) => {
     try {
         const { id } = req.params;
@@ -570,13 +489,7 @@ router.get('/links/:id', async (req, res) => {
         const link = await prisma.link.findUnique({
             where: { id },
             include: {
-                user: {
-                    select: { 
-                        id: true,
-                        email: true, 
-                        username: true 
-                    }
-                },
+                user: { select: { id: true, email: true } },
                 visits: {
                     take: 20,
                     orderBy: { createdAt: 'desc' },
@@ -588,25 +501,17 @@ router.get('/links/:id', async (req, res) => {
                         createdAt: true
                     }
                 },
-                _count: {
-                    select: { visits: true }
-                }
+                _count: { select: { visits: true } }
             }
         });
 
         if (!link) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Link nie znaleziony' 
-            });
+            return res.status(404).json({ success: false, message: 'Link nie znaleziony' });
         }
 
         res.json({
             success: true,
-            link: {
-                ...link,
-                visitsCount: link._count.visits
-            }
+            link: { ...link, visitsCount: link._count.visits }
         });
     } catch (error) {
         console.error('Błąd pobierania linku:', error);
@@ -614,20 +519,14 @@ router.get('/links/:id', async (req, res) => {
     }
 });
 
-// Aktywuj/dezaktywuj link
 router.patch('/links/:id/toggle-active', async (req, res) => {
     try {
         const { id } = req.params;
 
-        const link = await prisma.link.findUnique({
-            where: { id }
-        });
+        const link = await prisma.link.findUnique({ where: { id } });
 
         if (!link) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Link nie znaleziony' 
-            });
+            return res.status(404).json({ success: false, message: 'Link nie znaleziony' });
         }
 
         const updatedLink = await prisma.link.update({
@@ -646,32 +545,22 @@ router.patch('/links/:id/toggle-active', async (req, res) => {
     }
 });
 
-// Usuń link
 router.delete('/links/:id', async (req, res) => {
     try {
         const { id } = req.params;
 
-        const link = await prisma.link.findUnique({
-            where: { id }
-        });
+        const link = await prisma.link.findUnique({ where: { id } });
 
         if (!link) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Link nie znaleziony' 
-            });
+            return res.status(404).json({ success: false, message: 'Link nie znaleziony' });
         }
 
-        // Usuń wizyty i link
         await prisma.$transaction([
             prisma.visit.deleteMany({ where: { linkId: id } }),
             prisma.link.delete({ where: { id } })
         ]);
 
-        res.json({
-            success: true,
-            message: 'Link i wszystkie wizyty zostały usunięte'
-        });
+        res.json({ success: true, message: 'Link usunięty' });
     } catch (error) {
         console.error('Błąd usuwania linku:', error);
         res.status(500).json({ success: false, message: 'Błąd serwera' });
@@ -682,7 +571,6 @@ router.delete('/links/:id', async (req, res) => {
 // WYPŁATY
 // ======================
 
-// Lista wypłat
 router.get('/payouts', async (req, res) => {
     try {
         const { page = 1, limit = 20, status = 'all' } = req.query;
@@ -694,13 +582,7 @@ router.get('/payouts', async (req, res) => {
             prisma.payout.findMany({
                 where,
                 include: {
-                    user: {
-                        select: { 
-                            id: true,
-                            email: true, 
-                            username: true 
-                        }
-                    }
+                    user: { select: { id: true, email: true } }
                 },
                 orderBy: { createdAt: 'desc' },
                 skip,
@@ -714,7 +596,6 @@ router.get('/payouts', async (req, res) => {
             })
         ]);
 
-        // Przetworz statystyki
         const statusStats = {};
         stats.forEach(s => {
             statusStats[s.status] = {
@@ -740,7 +621,6 @@ router.get('/payouts', async (req, res) => {
     }
 });
 
-// Zmień status wypłaty
 router.patch('/payouts/:id', async (req, res) => {
     try {
         const { id } = req.params;
@@ -760,29 +640,20 @@ router.patch('/payouts/:id', async (req, res) => {
         });
 
         if (!payout) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Wypłata nie znaleziona' 
-            });
+            return res.status(404).json({ success: false, message: 'Wypłata nie znaleziona' });
         }
 
-        // Jeśli odrzucona, zwróć pieniądze na saldo
         if (status === 'REJECTED' && payout.status !== 'REJECTED') {
             await prisma.user.update({
                 where: { id: payout.userId },
-                data: {
-                    balance: { increment: payout.amount }
-                }
+                data: { balance: { increment: payout.amount } }
             });
         }
 
-        // Jeśli zmieniana z odrzuconej na inną, odejmij saldo
         if (payout.status === 'REJECTED' && status !== 'REJECTED') {
             await prisma.user.update({
                 where: { id: payout.userId },
-                data: {
-                    balance: { decrement: payout.amount }
-                }
+                data: { balance: { decrement: payout.amount } }
             });
         }
 
@@ -793,11 +664,7 @@ router.patch('/payouts/:id', async (req, res) => {
                 adminNote: adminNote || payout.adminNote,
                 processedAt: status === 'COMPLETED' ? new Date() : payout.processedAt
             },
-            include: {
-                user: {
-                    select: { email: true, username: true }
-                }
-            }
+            include: { user: { select: { email: true } } }
         });
 
         res.json({
@@ -815,19 +682,16 @@ router.patch('/payouts/:id', async (req, res) => {
 // WIADOMOŚCI KONTAKTOWE
 // ======================
 
-// Lista wiadomości
 router.get('/messages', async (req, res) => {
     try {
         const { page = 1, limit = 20, status = 'all' } = req.query;
         const skip = (parseInt(page) - 1) * parseInt(limit);
 
-        // Sprawdź czy model ContactMessage istnieje
         let messages = [];
         let total = 0;
 
         try {
             const where = status !== 'all' ? { status: status.toUpperCase() } : {};
-
             [messages, total] = await Promise.all([
                 prisma.contactMessage.findMany({
                     where,
@@ -838,8 +702,7 @@ router.get('/messages', async (req, res) => {
                 prisma.contactMessage.count({ where })
             ]);
         } catch (e) {
-            // Model nie istnieje - zwróć pustą listę
-            console.log('Model ContactMessage nie istnieje:', e.message);
+            console.log('Model ContactMessage może nie istnieć');
         }
 
         res.json({
@@ -858,40 +721,25 @@ router.get('/messages', async (req, res) => {
     }
 });
 
-// Oznacz wiadomość jako przeczytaną
 router.patch('/messages/:id/read', async (req, res) => {
     try {
         const { id } = req.params;
-
         const message = await prisma.contactMessage.update({
             where: { id },
             data: { status: 'READ' }
         });
-
-        res.json({
-            success: true,
-            message: 'Wiadomość oznaczona jako przeczytana',
-            data: message
-        });
+        res.json({ success: true, message: 'Wiadomość oznaczona jako przeczytana', data: message });
     } catch (error) {
         console.error('Błąd oznaczania wiadomości:', error);
         res.status(500).json({ success: false, message: 'Błąd serwera' });
     }
 });
 
-// Usuń wiadomość
 router.delete('/messages/:id', async (req, res) => {
     try {
         const { id } = req.params;
-
-        await prisma.contactMessage.delete({
-            where: { id }
-        });
-
-        res.json({
-            success: true,
-            message: 'Wiadomość usunięta'
-        });
+        await prisma.contactMessage.delete({ where: { id } });
+        res.json({ success: true, message: 'Wiadomość usunięta' });
     } catch (error) {
         console.error('Błąd usuwania wiadomości:', error);
         res.status(500).json({ success: false, message: 'Błąd serwera' });
@@ -902,104 +750,64 @@ router.delete('/messages/:id', async (req, res) => {
 // SZYFROWANIE & BEZPIECZEŃSTWO
 // ======================
 
-// Sprawdź status szyfrowania
 router.get('/encryption-status', async (req, res) => {
     try {
         const isValid = validateEncryptionKey();
-        
         res.json({
             success: true,
             encryptionEnabled: isValid,
             algorithm: 'AES-256-GCM',
-            message: isValid 
-                ? 'Szyfrowanie działa poprawnie' 
-                : 'Problem z kluczem szyfrowania!'
+            message: isValid ? 'Szyfrowanie działa poprawnie' : 'Problem z kluczem szyfrowania!'
         });
     } catch (error) {
-        res.status(500).json({ 
-            success: false, 
-            message: 'Błąd sprawdzania szyfrowania' 
-        });
+        res.status(500).json({ success: false, message: 'Błąd sprawdzania szyfrowania' });
     }
 });
 
-// Odszyfruj IP użytkownika
 router.post('/decrypt-user-ip', async (req, res) => {
     try {
         const { userId } = req.body;
         
         if (!userId) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'ID użytkownika jest wymagane' 
-            });
+            return res.status(400).json({ success: false, message: 'ID użytkownika jest wymagane' });
         }
         
         const user = await prisma.user.findUnique({
             where: { id: userId },
             select: {
-                id: true,
-                email: true,
-                registrationIp: true,
-                lastLoginIp: true,
-                lastLoginAt: true,
-                createdAt: true
+                id: true, email: true, registrationIp: true,
+                lastLoginIp: true, lastLoginAt: true, createdAt: true
             }
         });
         
         if (!user) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Użytkownik nie znaleziony' 
-            });
+            return res.status(404).json({ success: false, message: 'Użytkownik nie znaleziony' });
         }
         
-        let registrationIp = null;
-        let lastLoginIp = null;
+        let registrationIp = null, lastLoginIp = null;
         
         try {
-            if (user.registrationIp) {
-                registrationIp = decrypt(user.registrationIp);
-            }
-        } catch (e) {
-            registrationIp = '[błąd odszyfrowania]';
-        }
+            if (user.registrationIp) registrationIp = decrypt(user.registrationIp);
+        } catch (e) { registrationIp = '[błąd odszyfrowania]'; }
         
         try {
-            if (user.lastLoginIp) {
-                lastLoginIp = decrypt(user.lastLoginIp);
-            }
-        } catch (e) {
-            lastLoginIp = '[błąd odszyfrowania]';
-        }
+            if (user.lastLoginIp) lastLoginIp = decrypt(user.lastLoginIp);
+        } catch (e) { lastLoginIp = '[błąd odszyfrowania]'; }
         
         res.json({
             success: true,
-            user: {
-                id: user.id,
-                email: user.email,
-                registrationIp,
-                lastLoginIp,
-                lastLoginAt: user.lastLoginAt,
-                createdAt: user.createdAt
-            }
+            user: { id: user.id, email: user.email, registrationIp, lastLoginIp, lastLoginAt: user.lastLoginAt, createdAt: user.createdAt }
         });
-        
     } catch (error) {
-        console.error('Błąd odszyfrowania IP użytkownika:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Błąd serwera' 
-        });
+        console.error('Błąd odszyfrowania IP:', error);
+        res.status(500).json({ success: false, message: 'Błąd serwera' });
     }
 });
 
-// Pobierz historię IP użytkownika
 router.get('/user-ip-history/:userId', async (req, res) => {
     try {
         const { userId } = req.params;
         const { page = 1, limit = 20 } = req.query;
-        
         const skip = (parseInt(page) - 1) * parseInt(limit);
         
         const user = await prisma.user.findUnique({
@@ -1008,201 +816,119 @@ router.get('/user-ip-history/:userId', async (req, res) => {
         });
         
         if (!user) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Użytkownik nie znaleziony' 
-            });
+            return res.status(404).json({ success: false, message: 'Użytkownik nie znaleziony' });
         }
         
-        const [logs, total] = await Promise.all([
-            prisma.ipLog.findMany({
-                where: { userId },
-                orderBy: { createdAt: 'desc' },
-                skip,
-                take: parseInt(limit)
-            }),
-            prisma.ipLog.count({ where: { userId } })
-        ]);
+        let logs = [], total = 0;
+        
+        try {
+            [logs, total] = await Promise.all([
+                prisma.ipLog.findMany({
+                    where: { userId },
+                    orderBy: { createdAt: 'desc' },
+                    skip,
+                    take: parseInt(limit)
+                }),
+                prisma.ipLog.count({ where: { userId } })
+            ]);
+        } catch (e) {
+            console.log('Model IpLog może nie istnieć');
+        }
         
         const decryptedLogs = logs.map(log => {
             let ip = null;
-            try {
-                ip = decrypt(log.encryptedIp);
-            } catch (e) {
-                ip = '[błąd odszyfrowania]';
-            }
-            
-            return {
-                id: log.id,
-                ip,
-                action: log.action,
-                userAgent: log.userAgent,
-                createdAt: log.createdAt
-            };
+            try { ip = decrypt(log.encryptedIp); } catch (e) { ip = '[błąd]'; }
+            return { id: log.id, ip, action: log.action, userAgent: log.userAgent, createdAt: log.createdAt };
         });
         
         res.json({
             success: true,
             user: { id: user.id, email: user.email },
             logs: decryptedLogs,
-            pagination: {
-                page: parseInt(page),
-                limit: parseInt(limit),
-                total,
-                totalPages: Math.ceil(total / parseInt(limit))
-            }
+            pagination: { page: parseInt(page), limit: parseInt(limit), total, totalPages: Math.ceil(total / parseInt(limit)) }
         });
-        
     } catch (error) {
         console.error('Błąd pobierania historii IP:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Błąd serwera' 
-        });
+        res.status(500).json({ success: false, message: 'Błąd serwera' });
     }
 });
 
-// Odszyfruj IP wizyty
 router.post('/decrypt-visit-ip', async (req, res) => {
     try {
         const { visitId } = req.body;
         
         if (!visitId) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'ID wizyty jest wymagane' 
-            });
+            return res.status(400).json({ success: false, message: 'ID wizyty jest wymagane' });
         }
         
         const visit = await prisma.visit.findUnique({
             where: { id: visitId },
             include: {
                 link: {
-                    select: {
-                        shortCode: true,
-                        title: true,
-                        user: {
-                            select: { email: true }
-                        }
-                    }
+                    select: { shortCode: true, title: true, user: { select: { email: true } } }
                 }
             }
         });
         
         if (!visit) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Wizyta nie znaleziona' 
-            });
+            return res.status(404).json({ success: false, message: 'Wizyta nie znaleziona' });
         }
         
         let ip = null;
         try {
-            if (visit.encryptedIp) {
-                ip = decrypt(visit.encryptedIp);
-            }
-        } catch (e) {
-            ip = '[błąd odszyfrowania]';
-        }
+            if (visit.encryptedIp) ip = decrypt(visit.encryptedIp);
+        } catch (e) { ip = '[błąd odszyfrowania]'; }
         
         res.json({
             success: true,
             visit: {
-                id: visit.id,
-                ip,
-                country: visit.country,
-                device: visit.device,
-                userAgent: visit.userAgent,
-                referer: visit.referer,
-                earned: visit.earned,
+                id: visit.id, ip, country: visit.country, device: visit.device,
+                userAgent: visit.userAgent, referer: visit.referer, earned: visit.earned,
                 createdAt: visit.createdAt,
-                link: {
-                    shortCode: visit.link.shortCode,
-                    title: visit.link.title,
-                    ownerEmail: visit.link.user.email
-                }
+                link: { shortCode: visit.link.shortCode, title: visit.link.title, ownerEmail: visit.link.user.email }
             }
         });
-        
     } catch (error) {
         console.error('Błąd odszyfrowania IP wizyty:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Błąd serwera' 
-        });
+        res.status(500).json({ success: false, message: 'Błąd serwera' });
     }
 });
 
-// Wyszukaj użytkowników po IP
 router.post('/search-by-ip', async (req, res) => {
     try {
         const { ip } = req.body;
         
         if (!ip) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'Adres IP jest wymagany' 
-            });
+            return res.status(400).json({ success: false, message: 'Adres IP jest wymagany' });
         }
         
         const users = await prisma.user.findMany({
-            select: {
-                id: true,
-                email: true,
-                registrationIp: true,
-                lastLoginIp: true,
-                createdAt: true,
-                isActive: true
-            }
+            select: { id: true, email: true, registrationIp: true, lastLoginIp: true, createdAt: true, isActive: true }
         });
         
         const matchingUsers = [];
         
         for (const user of users) {
-            let regIp = null;
-            let loginIp = null;
+            let regIp = null, loginIp = null;
             
             try {
-                if (user.registrationIp) {
-                    regIp = decrypt(user.registrationIp);
-                }
-                if (user.lastLoginIp) {
-                    loginIp = decrypt(user.lastLoginIp);
-                }
-            } catch (e) {
-                continue;
-            }
+                if (user.registrationIp) regIp = decrypt(user.registrationIp);
+                if (user.lastLoginIp) loginIp = decrypt(user.lastLoginIp);
+            } catch (e) { continue; }
             
             if (regIp === ip || loginIp === ip) {
                 matchingUsers.push({
-                    id: user.id,
-                    email: user.email,
-                    registrationIp: regIp,
-                    lastLoginIp: loginIp,
-                    createdAt: user.createdAt,
-                    isActive: user.isActive,
-                    matchType: regIp === ip && loginIp === ip 
-                        ? 'both' 
-                        : regIp === ip 
-                            ? 'registration' 
-                            : 'login'
+                    id: user.id, email: user.email, registrationIp: regIp, lastLoginIp: loginIp,
+                    createdAt: user.createdAt, isActive: user.isActive,
+                    matchType: regIp === ip && loginIp === ip ? 'both' : regIp === ip ? 'registration' : 'login'
                 });
             }
         }
         
-        res.json({
-            success: true,
-            searchedIp: ip,
-            results: matchingUsers,
-            count: matchingUsers.length
-        });
-        
+        res.json({ success: true, searchedIp: ip, results: matchingUsers, count: matchingUsers.length });
     } catch (error) {
         console.error('Błąd wyszukiwania po IP:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Błąd serwera' 
-        });
+        res.status(500).json({ success: false, message: 'Błąd serwera' });
     }
 });
 
