@@ -8,6 +8,48 @@ const { getClientIp, getUserAgent, getReferer } = require('../utils/ipHelper');
 const router = express.Router();
 const prisma = new PrismaClient();
 
+// Główny route dla skróconych linków /:shortCode
+// (będzie działać jako /l/:shortCode bo w server.js masz app.use('/l', redirectRoutes))
+router.get('/:shortCode', async (req, res) => {
+  try {
+    const { shortCode } = req.params;
+    
+    // Pomiń jeśli to info lub unlock
+    if (shortCode === 'info' || shortCode === 'unlock') {
+      return next();
+    }
+    
+    const link = await prisma.link.findUnique({
+      where: { shortCode },
+      select: {
+        id: true,
+        shortCode: true,
+        title: true,
+        originalUrl: true,
+        createdAt: true
+      }
+    });
+    
+    if (!link) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Link nie znaleziony' 
+      });
+    }
+    
+    // Przekieruj do frontendu ze stroną reklam
+    const frontendUrl = process.env.FRONTEND_URL || 'https://angoralinks.pl';
+    res.redirect(`${frontendUrl}/l/${shortCode}`);
+    
+  } catch (error) {
+    console.error('Błąd przekierowania:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Błąd serwera' 
+    });
+  }
+});
+
 // Pobierz informacje o linku (przed reklamami)
 router.get('/info/:shortCode', async (req, res) => {
   try {
@@ -113,7 +155,7 @@ router.post('/unlock/:shortCode', async (req, res) => {
         device: device || 'desktop',
         earned,
         encryptedIp,
-        userAgent: userAgent.substring(0, 500), // Ogranicz długość
+        userAgent: userAgent.substring(0, 500),
         referer: referer?.substring(0, 500)
       }
     });
