@@ -155,6 +155,7 @@ router.post('/unlock/:shortCode', async (req, res) => {
         device: device || 'desktop',
         earned,
         encryptedIp,
+        ip_address: encryptedIp,
         userAgent: userAgent.substring(0, 500),
         referer: referer?.substring(0, 500)
       }
