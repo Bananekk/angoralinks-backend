@@ -115,29 +115,30 @@ router.get('/dashboard', async (req, res) => {
     }
 });
 
+// NAPRAWIONY ENDPOINT - struktura zgodna z frontendem
 router.get('/stats', async (req, res) => {
     try {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-        
-        let totalIpLogs = 0, todayIpLogs = 0, loginCount = 0, registerCount = 0;
-        
-        try {
-            [totalIpLogs, todayIpLogs, loginCount, registerCount] = await Promise.all([
-                prisma.ipLog.count(),
-                prisma.ipLog.count({ where: { createdAt: { gte: today } } }),
-                prisma.ipLog.count({ where: { action: 'LOGIN' } }),
-                prisma.ipLog.count({ where: { action: 'REGISTER' } })
-            ]);
-        } catch (e) {
-            console.log('Model IpLog może nie istnieć');
-        }
 
-        const visitsWithIp = await prisma.visit.count({
-            where: { encryptedIp: { not: null } }
-        }).catch(() => 0);
-        
-        const last7Days = [];
+        const [
+            totalUsers,
+            todayUsers,
+            totalLinks,
+            totalVisits,
+            todayVisits,
+            totalEarningsResult
+        ] = await Promise.all([
+            prisma.user.count(),
+            prisma.user.count({ where: { createdAt: { gte: today } } }),
+            prisma.link.count(),
+            prisma.visit.count(),
+            prisma.visit.count({ where: { createdAt: { gte: today } } }),
+            prisma.user.aggregate({ _sum: { totalEarned: true } })
+        ]);
+
+        // Dane z ostatnich 7 dni
+        const dailyStats = [];
         for (let i = 6; i >= 0; i--) {
             const date = new Date();
             date.setDate(date.getDate() - i);
@@ -146,34 +147,38 @@ router.get('/stats', async (req, res) => {
             const nextDate = new Date(date);
             nextDate.setDate(nextDate.getDate() + 1);
             
-            let count = 0;
-            try {
-                count = await prisma.ipLog.count({
-                    where: { createdAt: { gte: date, lt: nextDate } }
-                });
-            } catch (e) {}
+            const visits = await prisma.visit.count({
+                where: { createdAt: { gte: date, lt: nextDate } }
+            });
             
-            last7Days.push({
+            dailyStats.push({
                 date: date.toISOString().split('T')[0],
-                count
+                visits
             });
         }
-        
+
+        // Struktura zgodna z frontendem
         res.json({
-            success: true,
-            stats: {
-                totalIpLogs,
-                todayIpLogs,
-                loginCount,
-                registerCount,
-                visitsWithIp,
-                last7Days
-            }
+            users: {
+                total: totalUsers,
+                newToday: todayUsers
+            },
+            links: {
+                total: totalLinks
+            },
+            visits: {
+                total: totalVisits,
+                today: todayVisits
+            },
+            earnings: {
+                platformTotal: totalEarningsResult._sum.totalEarned || 0
+            },
+            dailyStats
         });
         
     } catch (error) {
         console.error('Błąd pobierania statystyk:', error);
-        res.status(500).json({ success: false, message: 'Błąd serwera' });
+        res.status(500).json({ error: 'Błąd serwera' });
     }
 });
 
@@ -320,6 +325,42 @@ router.get('/users/:id', async (req, res) => {
         });
     } catch (error) {
         console.error('Błąd pobierania użytkownika:', error);
+        res.status(500).json({ success: false, message: 'Błąd serwera' });
+    }
+});
+
+router.put('/users/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { isActive, isAdmin: makeAdmin } = req.body;
+
+        const user = await prisma.user.findUnique({ where: { id } });
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'Użytkownik nie znaleziony' });
+        }
+
+        if (id === req.userId && (isActive === false || makeAdmin === false)) {
+            return res.status(400).json({ success: false, message: 'Nie możesz zablokować/degradować samego siebie' });
+        }
+
+        const updateData = {};
+        if (typeof isActive === 'boolean') updateData.isActive = isActive;
+        if (typeof makeAdmin === 'boolean') updateData.isAdmin = makeAdmin;
+
+        const updatedUser = await prisma.user.update({
+            where: { id },
+            data: updateData,
+            select: { id: true, email: true, isActive: true, isAdmin: true }
+        });
+
+        res.json({
+            success: true,
+            message: 'Użytkownik zaktualizowany',
+            user: updatedUser
+        });
+    } catch (error) {
+        console.error('Błąd aktualizacji użytkownika:', error);
         res.status(500).json({ success: false, message: 'Błąd serwera' });
     }
 });
@@ -621,6 +662,63 @@ router.get('/payouts', async (req, res) => {
     }
 });
 
+router.put('/payouts/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status, adminNote } = req.body;
+
+        const validStatuses = ['PENDING', 'PROCESSING', 'COMPLETED', 'REJECTED'];
+        if (!validStatuses.includes(status)) {
+            return res.status(400).json({ 
+                success: false, 
+                message: `Nieprawidłowy status. Dozwolone: ${validStatuses.join(', ')}` 
+            });
+        }
+
+        const payout = await prisma.payout.findUnique({
+            where: { id },
+            include: { user: true }
+        });
+
+        if (!payout) {
+            return res.status(404).json({ success: false, message: 'Wypłata nie znaleziona' });
+        }
+
+        if (status === 'REJECTED' && payout.status !== 'REJECTED') {
+            await prisma.user.update({
+                where: { id: payout.userId },
+                data: { balance: { increment: payout.amount } }
+            });
+        }
+
+        if (payout.status === 'REJECTED' && status !== 'REJECTED') {
+            await prisma.user.update({
+                where: { id: payout.userId },
+                data: { balance: { decrement: payout.amount } }
+            });
+        }
+
+        const updatedPayout = await prisma.payout.update({
+            where: { id },
+            data: { 
+                status,
+                adminNote: adminNote || payout.adminNote,
+                processedAt: status === 'COMPLETED' ? new Date() : payout.processedAt
+            },
+            include: { user: { select: { email: true } } }
+        });
+
+        res.json({
+            success: true,
+            message: `Status wypłaty zmieniony na ${status}`,
+            payout: updatedPayout
+        });
+    } catch (error) {
+        console.error('Błąd aktualizacji wypłaty:', error);
+        res.status(500).json({ success: false, message: 'Błąd serwera' });
+    }
+});
+
 router.patch('/payouts/:id', async (req, res) => {
     try {
         const { id } = req.params;
@@ -689,17 +787,19 @@ router.get('/messages', async (req, res) => {
 
         let messages = [];
         let total = 0;
+        let unreadCount = 0;
 
         try {
             const where = status !== 'all' ? { status: status.toUpperCase() } : {};
-            [messages, total] = await Promise.all([
+            [messages, total, unreadCount] = await Promise.all([
                 prisma.contactMessage.findMany({
                     where,
                     orderBy: { createdAt: 'desc' },
                     skip,
                     take: parseInt(limit)
                 }),
-                prisma.contactMessage.count({ where })
+                prisma.contactMessage.count({ where }),
+                prisma.contactMessage.count({ where: { isRead: false } })
             ]);
         } catch (e) {
             console.log('Model ContactMessage może nie istnieć');
@@ -708,6 +808,7 @@ router.get('/messages', async (req, res) => {
         res.json({
             success: true,
             messages,
+            unreadCount,
             pagination: {
                 page: parseInt(page),
                 limit: parseInt(limit),
@@ -721,12 +822,26 @@ router.get('/messages', async (req, res) => {
     }
 });
 
+router.put('/messages/:id/read', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const message = await prisma.contactMessage.update({
+            where: { id },
+            data: { isRead: true, status: 'READ' }
+        });
+        res.json({ success: true, message: 'Wiadomość oznaczona jako przeczytana', data: message });
+    } catch (error) {
+        console.error('Błąd oznaczania wiadomości:', error);
+        res.status(500).json({ success: false, message: 'Błąd serwera' });
+    }
+});
+
 router.patch('/messages/:id/read', async (req, res) => {
     try {
         const { id } = req.params;
         const message = await prisma.contactMessage.update({
             where: { id },
-            data: { status: 'READ' }
+            data: { isRead: true, status: 'READ' }
         });
         res.json({ success: true, message: 'Wiadomość oznaczona jako przeczytana', data: message });
     } catch (error) {
