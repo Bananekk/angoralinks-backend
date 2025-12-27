@@ -1,8 +1,13 @@
+// routes/adminRoutes.js
+
 const express = require('express');
 const { PrismaClient } = require('@prisma/client');
 const { auth, isAdmin } = require('../middleware/auth');
 
-// Bezpieczny import
+// =====================
+// BEZPIECZNE IMPORTY
+// =====================
+
 let decrypt, validateEncryptionKey;
 try {
     const encryption = require('../utils/encryption');
@@ -19,6 +24,157 @@ try {
 } catch (e) {
     maskIp = (ip) => ip ? ip.replace(/\.\d+$/, '.***') : 'unknown';
 }
+
+// =====================
+// SERWIS ADSTERRA
+// =====================
+
+class AdsterraService {
+    constructor() {
+        this.apiToken = process.env.ADSTERRA_API_TOKEN;
+        this.baseUrl = 'https://api3.adsterratools.com/publisher';
+        this.cache = {
+            data: null,
+            timestamp: null,
+            ttl: 5 * 60 * 1000 // 5 minut cache
+        };
+    }
+
+    async fetchWithAuth(endpoint) {
+        if (!this.apiToken) {
+            console.warn('Brak tokenu Adsterra API - ustaw ADSTERRA_API_TOKEN');
+            return null;
+        }
+
+        try {
+            const response = await fetch(`${this.baseUrl}${endpoint}`, {
+                method: 'GET',
+                headers: {
+                    'Accept': 'application/json',
+                    'X-API-Key': this.apiToken
+                }
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                console.error(`Adsterra API error: ${response.status} - ${errorText}`);
+                return null;
+            }
+
+            return await response.json();
+        } catch (error) {
+            console.error('Błąd Adsterra API:', error.message);
+            return null;
+        }
+    }
+
+    formatDate(date) {
+        return date.toISOString().split('T')[0];
+    }
+
+    async getStats(startDate, endDate) {
+        const start = this.formatDate(startDate);
+        const end = this.formatDate(endDate);
+        
+        return await this.fetchWithAuth(
+            `/stats.json?start_date=${start}&finish_date=${end}&group_by=date`
+        );
+    }
+
+    async getTodayEarnings() {
+        const today = new Date();
+        const stats = await this.getStats(today, today);
+        
+        if (!stats?.items?.length) return 0;
+        
+        return stats.items.reduce((sum, item) => sum + parseFloat(item.revenue || 0), 0);
+    }
+
+    async getLast7DaysEarnings() {
+        const endDate = new Date();
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - 6);
+
+        const stats = await this.getStats(startDate, endDate);
+        
+        if (!stats?.items) return { total: 0, daily: [] };
+
+        const daily = stats.items.map(item => ({
+            date: item.date,
+            revenue: parseFloat(item.revenue || 0),
+            impressions: parseInt(item.impressions || 0),
+            clicks: parseInt(item.clicks || 0)
+        }));
+
+        const total = daily.reduce((sum, day) => sum + day.revenue, 0);
+
+        return { total, daily };
+    }
+
+    async getMonthlyRevenue() {
+        const endDate = new Date();
+        const startDate = new Date();
+        startDate.setDate(1); // Początek miesiąca
+
+        const stats = await this.getStats(startDate, endDate);
+        
+        if (!stats?.items) return 0;
+
+        return stats.items.reduce((sum, item) => sum + parseFloat(item.revenue || 0), 0);
+    }
+
+    async getAllStats() {
+        // Sprawdź cache
+        if (this.cache.data && this.cache.timestamp) {
+            const age = Date.now() - this.cache.timestamp;
+            if (age < this.cache.ttl) {
+                return { ...this.cache.data, fromCache: true };
+            }
+        }
+
+        try {
+            const [todayEarnings, last7Days, monthlyRevenue] = await Promise.all([
+                this.getTodayEarnings(),
+                this.getLast7DaysEarnings(),
+                this.getMonthlyRevenue()
+            ]);
+
+            const data = {
+                today: todayEarnings,
+                last7Days: last7Days.total,
+                monthlyRevenue,
+                dailyStats: last7Days.daily,
+                lastUpdated: new Date().toISOString(),
+                fromCache: false
+            };
+
+            // Zapisz do cache
+            this.cache.data = data;
+            this.cache.timestamp = Date.now();
+
+            return data;
+        } catch (error) {
+            console.error('Błąd pobierania statystyk Adsterra:', error);
+            
+            if (this.cache.data) {
+                return { ...this.cache.data, fromCache: true, error: true };
+            }
+            
+            return null;
+        }
+    }
+
+    clearCache() {
+        this.cache.data = null;
+        this.cache.timestamp = null;
+    }
+}
+
+const adsterraService = new AdsterraService();
+
+// =====================
+// INICJALIZACJA
+// =====================
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -43,7 +199,8 @@ router.get('/dashboard', async (req, res) => {
             pendingPayouts,
             totalEarningsResult,
             activeUsers,
-            todayUsers
+            todayUsers,
+            adsterraStats
         ] = await Promise.all([
             prisma.user.count(),
             prisma.link.count(),
@@ -62,7 +219,8 @@ router.get('/dashboard', async (req, res) => {
             }),
             prisma.user.count({
                 where: { createdAt: { gte: today } }
-            })
+            }),
+            adsterraService.getAllStats()
         ]);
 
         const last7Days = [];
@@ -73,6 +231,8 @@ router.get('/dashboard', async (req, res) => {
             
             const nextDate = new Date(date);
             nextDate.setDate(nextDate.getDate() + 1);
+            
+            const dateStr = date.toISOString().split('T')[0];
             
             const [visits, users, earnings] = await Promise.all([
                 prisma.visit.count({
@@ -87,11 +247,15 @@ router.get('/dashboard', async (req, res) => {
                 })
             ]);
             
+            // Znajdź zarobki Adsterra dla tego dnia
+            const adsterraDay = adsterraStats?.dailyStats?.find(d => d.date === dateStr);
+            
             last7Days.push({
-                date: date.toISOString().split('T')[0],
+                date: dateStr,
                 visits,
                 users,
-                earnings: earnings._sum.earned || 0
+                earnings: earnings._sum.earned || 0,
+                adsterraRevenue: adsterraDay?.revenue || 0
             });
         }
 
@@ -107,6 +271,7 @@ router.get('/dashboard', async (req, res) => {
                 pendingPayouts,
                 totalEarnings: totalEarningsResult._sum.totalEarned || 0
             },
+            adsterra: adsterraStats,
             last7Days
         });
     } catch (error) {
@@ -115,7 +280,7 @@ router.get('/dashboard', async (req, res) => {
     }
 });
 
-// NAPRAWIONY ENDPOINT - struktura zgodna z frontendem
+// ENDPOINT /stats - z Adsterra
 router.get('/stats', async (req, res) => {
     try {
         const today = new Date();
@@ -127,14 +292,22 @@ router.get('/stats', async (req, res) => {
             totalLinks,
             totalVisits,
             todayVisits,
-            totalEarningsResult
+            totalEarningsResult,
+            pendingPayoutsResult,
+            adsterraStats
         ] = await Promise.all([
             prisma.user.count(),
             prisma.user.count({ where: { createdAt: { gte: today } } }),
             prisma.link.count(),
             prisma.visit.count(),
             prisma.visit.count({ where: { createdAt: { gte: today } } }),
-            prisma.user.aggregate({ _sum: { totalEarned: true } })
+            prisma.user.aggregate({ _sum: { totalEarned: true } }),
+            prisma.payout.aggregate({
+                where: { status: 'PENDING' },
+                _sum: { amount: true },
+                _count: true
+            }),
+            adsterraService.getAllStats()
         ]);
 
         // Dane z ostatnich 7 dni
@@ -147,13 +320,19 @@ router.get('/stats', async (req, res) => {
             const nextDate = new Date(date);
             nextDate.setDate(nextDate.getDate() + 1);
             
+            const dateStr = date.toISOString().split('T')[0];
+            
             const visits = await prisma.visit.count({
                 where: { createdAt: { gte: date, lt: nextDate } }
             });
             
+            // Znajdź zarobki Adsterra dla tego dnia
+            const adsterraDay = adsterraStats?.dailyStats?.find(d => d.date === dateStr);
+            
             dailyStats.push({
-                date: date.toISOString().split('T')[0],
-                visits
+                date: dateStr,
+                visits,
+                adsterraRevenue: adsterraDay?.revenue || 0
             });
         }
 
@@ -171,14 +350,99 @@ router.get('/stats', async (req, res) => {
                 today: todayVisits
             },
             earnings: {
-                platformTotal: totalEarningsResult._sum.totalEarned || 0
+                platformTotal: totalEarningsResult._sum.totalEarned || 0,
+                pendingPayouts: pendingPayoutsResult._sum.amount || 0,
+                pendingPayoutsCount: pendingPayoutsResult._count || 0
             },
+            adsterra: adsterraStats ? {
+                today: adsterraStats.today || 0,
+                last7Days: adsterraStats.last7Days || 0,
+                monthlyRevenue: adsterraStats.monthlyRevenue || 0,
+                dailyStats: adsterraStats.dailyStats || [],
+                lastUpdated: adsterraStats.lastUpdated,
+                fromCache: adsterraStats.fromCache || false
+            } : null,
             dailyStats
         });
         
     } catch (error) {
         console.error('Błąd pobierania statystyk:', error);
         res.status(500).json({ error: 'Błąd serwera' });
+    }
+});
+
+// ======================
+// ADSTERRA - DEDYKOWANE ENDPOINTY
+// ======================
+
+// Pobierz tylko statystyki Adsterra
+router.get('/adsterra-stats', async (req, res) => {
+    try {
+        const stats = await adsterraService.getAllStats();
+        
+        if (!stats) {
+            return res.status(503).json({ 
+                success: false,
+                error: 'Nie można pobrać danych z Adsterra',
+                message: 'Sprawdź czy token API jest poprawny (ADSTERRA_API_TOKEN)'
+            });
+        }
+
+        res.json({
+            success: true,
+            ...stats
+        });
+    } catch (error) {
+        console.error('Błąd Adsterra:', error);
+        res.status(500).json({ success: false, error: 'Błąd serwera' });
+    }
+});
+
+// Odśwież cache Adsterra
+router.post('/adsterra-stats/refresh', async (req, res) => {
+    try {
+        // Wyczyść cache
+        adsterraService.clearCache();
+        
+        // Pobierz świeże dane
+        const stats = await adsterraService.getAllStats();
+        
+        res.json({ 
+            success: true, 
+            message: 'Cache Adsterra odświeżony',
+            data: stats 
+        });
+    } catch (error) {
+        console.error('Błąd odświeżania Adsterra:', error);
+        res.status(500).json({ success: false, error: 'Błąd odświeżania' });
+    }
+});
+
+// Status konfiguracji Adsterra
+router.get('/adsterra-status', async (req, res) => {
+    try {
+        const hasToken = !!process.env.ADSTERRA_API_TOKEN;
+        const tokenPreview = hasToken 
+            ? `${process.env.ADSTERRA_API_TOKEN.substring(0, 8)}...` 
+            : null;
+        
+        let testResult = null;
+        if (hasToken) {
+            const stats = await adsterraService.getAllStats();
+            testResult = stats ? 'connected' : 'error';
+        }
+        
+        res.json({
+            success: true,
+            configured: hasToken,
+            tokenPreview,
+            status: testResult,
+            cacheAge: adsterraService.cache.timestamp 
+                ? Math.round((Date.now() - adsterraService.cache.timestamp) / 1000) + 's'
+                : null
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: 'Błąd sprawdzania statusu' });
     }
 });
 
@@ -662,7 +926,7 @@ router.get('/payouts', async (req, res) => {
     }
 });
 
-router.put('/payouts/:id', async (req, res) => {
+router.patch('/payouts/:id', async (req, res) => {
     try {
         const { id } = req.params;
         const { status, adminNote } = req.body;
@@ -684,6 +948,7 @@ router.put('/payouts/:id', async (req, res) => {
             return res.status(404).json({ success: false, message: 'Wypłata nie znaleziona' });
         }
 
+        // Zwrot środków przy odrzuceniu
         if (status === 'REJECTED' && payout.status !== 'REJECTED') {
             await prisma.user.update({
                 where: { id: payout.userId },
@@ -691,7 +956,15 @@ router.put('/payouts/:id', async (req, res) => {
             });
         }
 
+        // Ponowne pobranie przy zmianie z REJECTED na inny status
         if (payout.status === 'REJECTED' && status !== 'REJECTED') {
+            const user = await prisma.user.findUnique({ where: { id: payout.userId } });
+            if (user.balance < payout.amount) {
+                return res.status(400).json({ 
+                    success: false, 
+                    message: 'Użytkownik nie ma wystarczających środków' 
+                });
+            }
             await prisma.user.update({
                 where: { id: payout.userId },
                 data: { balance: { decrement: payout.amount } }
@@ -719,61 +992,11 @@ router.put('/payouts/:id', async (req, res) => {
     }
 });
 
-router.patch('/payouts/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { status, adminNote } = req.body;
-
-        const validStatuses = ['PENDING', 'PROCESSING', 'COMPLETED', 'REJECTED'];
-        if (!validStatuses.includes(status)) {
-            return res.status(400).json({ 
-                success: false, 
-                message: `Nieprawidłowy status. Dozwolone: ${validStatuses.join(', ')}` 
-            });
-        }
-
-        const payout = await prisma.payout.findUnique({
-            where: { id },
-            include: { user: true }
-        });
-
-        if (!payout) {
-            return res.status(404).json({ success: false, message: 'Wypłata nie znaleziona' });
-        }
-
-        if (status === 'REJECTED' && payout.status !== 'REJECTED') {
-            await prisma.user.update({
-                where: { id: payout.userId },
-                data: { balance: { increment: payout.amount } }
-            });
-        }
-
-        if (payout.status === 'REJECTED' && status !== 'REJECTED') {
-            await prisma.user.update({
-                where: { id: payout.userId },
-                data: { balance: { decrement: payout.amount } }
-            });
-        }
-
-        const updatedPayout = await prisma.payout.update({
-            where: { id },
-            data: { 
-                status,
-                adminNote: adminNote || payout.adminNote,
-                processedAt: status === 'COMPLETED' ? new Date() : payout.processedAt
-            },
-            include: { user: { select: { email: true } } }
-        });
-
-        res.json({
-            success: true,
-            message: `Status wypłaty zmieniony na ${status}`,
-            payout: updatedPayout
-        });
-    } catch (error) {
-        console.error('Błąd aktualizacji wypłaty:', error);
-        res.status(500).json({ success: false, message: 'Błąd serwera' });
-    }
+// Alias PUT dla kompatybilności
+router.put('/payouts/:id', async (req, res) => {
+    // Przekieruj do PATCH
+    req.method = 'PATCH';
+    return router.handle(req, res);
 });
 
 // ======================
@@ -802,7 +1025,7 @@ router.get('/messages', async (req, res) => {
                 prisma.contactMessage.count({ where: { isRead: false } })
             ]);
         } catch (e) {
-            console.log('Model ContactMessage może nie istnieć');
+            console.log('Model ContactMessage może nie istnieć:', e.message);
         }
 
         res.json({
@@ -818,20 +1041,6 @@ router.get('/messages', async (req, res) => {
         });
     } catch (error) {
         console.error('Błąd pobierania wiadomości:', error);
-        res.status(500).json({ success: false, message: 'Błąd serwera' });
-    }
-});
-
-router.put('/messages/:id/read', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const message = await prisma.contactMessage.update({
-            where: { id },
-            data: { isRead: true, status: 'READ' }
-        });
-        res.json({ success: true, message: 'Wiadomość oznaczona jako przeczytana', data: message });
-    } catch (error) {
-        console.error('Błąd oznaczania wiadomości:', error);
         res.status(500).json({ success: false, message: 'Błąd serwera' });
     }
 });
@@ -868,14 +1077,22 @@ router.delete('/messages/:id', async (req, res) => {
 router.get('/encryption-status', async (req, res) => {
     try {
         const isValid = validateEncryptionKey();
+        const hasAdsterraToken = !!process.env.ADSTERRA_API_TOKEN;
+        
         res.json({
             success: true,
-            encryptionEnabled: isValid,
-            algorithm: 'AES-256-GCM',
-            message: isValid ? 'Szyfrowanie działa poprawnie' : 'Problem z kluczem szyfrowania!'
+            encryption: {
+                enabled: isValid,
+                algorithm: 'AES-256-GCM',
+                status: isValid ? 'OK' : 'Problem z kluczem!'
+            },
+            adsterra: {
+                configured: hasAdsterraToken,
+                status: hasAdsterraToken ? 'Token ustawiony' : 'Brak tokenu ADSTERRA_API_TOKEN'
+            }
         });
     } catch (error) {
-        res.status(500).json({ success: false, message: 'Błąd sprawdzania szyfrowania' });
+        res.status(500).json({ success: false, message: 'Błąd sprawdzania statusu' });
     }
 });
 
@@ -890,8 +1107,12 @@ router.post('/decrypt-user-ip', async (req, res) => {
         const user = await prisma.user.findUnique({
             where: { id: userId },
             select: {
-                id: true, email: true, registrationIp: true,
-                lastLoginIp: true, lastLoginAt: true, createdAt: true
+                id: true, 
+                email: true, 
+                registrationIp: true,
+                lastLoginIp: true, 
+                lastLoginAt: true, 
+                createdAt: true
             }
         });
         
@@ -903,15 +1124,26 @@ router.post('/decrypt-user-ip', async (req, res) => {
         
         try {
             if (user.registrationIp) registrationIp = decrypt(user.registrationIp);
-        } catch (e) { registrationIp = '[błąd odszyfrowania]'; }
+        } catch (e) { 
+            registrationIp = '[błąd odszyfrowania]'; 
+        }
         
         try {
             if (user.lastLoginIp) lastLoginIp = decrypt(user.lastLoginIp);
-        } catch (e) { lastLoginIp = '[błąd odszyfrowania]'; }
+        } catch (e) { 
+            lastLoginIp = '[błąd odszyfrowania]'; 
+        }
         
         res.json({
             success: true,
-            user: { id: user.id, email: user.email, registrationIp, lastLoginIp, lastLoginAt: user.lastLoginAt, createdAt: user.createdAt }
+            user: { 
+                id: user.id, 
+                email: user.email, 
+                registrationIp, 
+                lastLoginIp, 
+                lastLoginAt: user.lastLoginAt, 
+                createdAt: user.createdAt 
+            }
         });
     } catch (error) {
         console.error('Błąd odszyfrowania IP:', error);
@@ -952,15 +1184,30 @@ router.get('/user-ip-history/:userId', async (req, res) => {
         
         const decryptedLogs = logs.map(log => {
             let ip = null;
-            try { ip = decrypt(log.encryptedIp); } catch (e) { ip = '[błąd]'; }
-            return { id: log.id, ip, action: log.action, userAgent: log.userAgent, createdAt: log.createdAt };
+            try { 
+                ip = decrypt(log.encryptedIp); 
+            } catch (e) { 
+                ip = '[błąd]'; 
+            }
+            return { 
+                id: log.id, 
+                ip, 
+                action: log.action, 
+                userAgent: log.userAgent, 
+                createdAt: log.createdAt 
+            };
         });
         
         res.json({
             success: true,
             user: { id: user.id, email: user.email },
             logs: decryptedLogs,
-            pagination: { page: parseInt(page), limit: parseInt(limit), total, totalPages: Math.ceil(total / parseInt(limit)) }
+            pagination: { 
+                page: parseInt(page), 
+                limit: parseInt(limit), 
+                total, 
+                totalPages: Math.ceil(total / parseInt(limit)) 
+            }
         });
     } catch (error) {
         console.error('Błąd pobierania historii IP:', error);
@@ -980,7 +1227,11 @@ router.post('/decrypt-visit-ip', async (req, res) => {
             where: { id: visitId },
             include: {
                 link: {
-                    select: { shortCode: true, title: true, user: { select: { email: true } } }
+                    select: { 
+                        shortCode: true, 
+                        title: true, 
+                        user: { select: { email: true } } 
+                    }
                 }
             }
         });
@@ -992,15 +1243,26 @@ router.post('/decrypt-visit-ip', async (req, res) => {
         let ip = null;
         try {
             if (visit.encryptedIp) ip = decrypt(visit.encryptedIp);
-        } catch (e) { ip = '[błąd odszyfrowania]'; }
+        } catch (e) { 
+            ip = '[błąd odszyfrowania]'; 
+        }
         
         res.json({
             success: true,
             visit: {
-                id: visit.id, ip, country: visit.country, device: visit.device,
-                userAgent: visit.userAgent, referer: visit.referer, earned: visit.earned,
+                id: visit.id, 
+                ip, 
+                country: visit.country, 
+                device: visit.device,
+                userAgent: visit.userAgent, 
+                referer: visit.referer, 
+                earned: visit.earned,
                 createdAt: visit.createdAt,
-                link: { shortCode: visit.link.shortCode, title: visit.link.title, ownerEmail: visit.link.user.email }
+                link: { 
+                    shortCode: visit.link.shortCode, 
+                    title: visit.link.title, 
+                    ownerEmail: visit.link.user.email 
+                }
             }
         });
     } catch (error) {
@@ -1018,7 +1280,14 @@ router.post('/search-by-ip', async (req, res) => {
         }
         
         const users = await prisma.user.findMany({
-            select: { id: true, email: true, registrationIp: true, lastLoginIp: true, createdAt: true, isActive: true }
+            select: { 
+                id: true, 
+                email: true, 
+                registrationIp: true, 
+                lastLoginIp: true, 
+                createdAt: true, 
+                isActive: true 
+            }
         });
         
         const matchingUsers = [];
@@ -1029,21 +1298,79 @@ router.post('/search-by-ip', async (req, res) => {
             try {
                 if (user.registrationIp) regIp = decrypt(user.registrationIp);
                 if (user.lastLoginIp) loginIp = decrypt(user.lastLoginIp);
-            } catch (e) { continue; }
+            } catch (e) { 
+                continue; 
+            }
             
             if (regIp === ip || loginIp === ip) {
                 matchingUsers.push({
-                    id: user.id, email: user.email, registrationIp: regIp, lastLoginIp: loginIp,
-                    createdAt: user.createdAt, isActive: user.isActive,
+                    id: user.id, 
+                    email: user.email, 
+                    registrationIp: regIp, 
+                    lastLoginIp: loginIp,
+                    createdAt: user.createdAt, 
+                    isActive: user.isActive,
                     matchType: regIp === ip && loginIp === ip ? 'both' : regIp === ip ? 'registration' : 'login'
                 });
             }
         }
         
-        res.json({ success: true, searchedIp: ip, results: matchingUsers, count: matchingUsers.length });
+        res.json({ 
+            success: true, 
+            searchedIp: ip, 
+            results: matchingUsers, 
+            count: matchingUsers.length 
+        });
     } catch (error) {
         console.error('Błąd wyszukiwania po IP:', error);
         res.status(500).json({ success: false, message: 'Błąd serwera' });
+    }
+});
+
+// ======================
+// ADSTERRA (placeholder)
+// ======================
+
+// Odśwież dane Adsterra
+router.post('/adsterra-stats/refresh', async (req, res) => {
+    try {
+        // Na razie zwracamy puste dane
+        // Później dodasz prawdziwą integrację z Adsterra API
+        res.json({ 
+            success: true, 
+            message: 'Adsterra nie skonfigurowane',
+            data: null
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: 'Błąd' });
+    }
+});
+
+// Status Adsterra
+router.get('/adsterra-stats', async (req, res) => {
+    try {
+        const hasToken = !!process.env.ADSTERRA_API_TOKEN;
+        
+        if (!hasToken) {
+            return res.json({
+                success: true,
+                configured: false,
+                message: 'Ustaw ADSTERRA_API_TOKEN w Railway'
+            });
+        }
+        
+        // Placeholder - później dodasz prawdziwą logikę
+        res.json({
+            success: true,
+            configured: true,
+            today: 0,
+            last7Days: 0,
+            monthlyRevenue: 0,
+            dailyStats: [],
+            lastUpdated: new Date().toISOString()
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: 'Błąd' });
     }
 });
 
