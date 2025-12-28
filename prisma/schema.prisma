@@ -9,45 +9,45 @@ datasource db {
 }
 
 model User {
-  id                   String    @id @default(cuid())
-  email                String    @unique
+  id                   String         @id @default(cuid())
+  email                String         @unique
   password_hash        String
-  balance              Decimal   @default(0) @db.Decimal(10, 4)
-  totalEarned          Decimal   @default(0) @map("total_earned") @db.Decimal(10, 4)
-  isVerified           Boolean   @default(false) @map("is_verified")
-  isActive             Boolean   @default(true) @map("is_active")
-  isAdmin              Boolean   @default(false) @map("is_admin")
+  balance              Decimal        @default(0) @db.Decimal(10, 4)
+  totalEarned          Decimal        @default(0) @map("total_earned") @db.Decimal(10, 4)
+  isVerified           Boolean        @default(false) @map("is_verified")
+  isActive             Boolean        @default(true) @map("is_active")
+  isAdmin              Boolean        @default(false) @map("is_admin")
   verification_code    String?
   verification_expires DateTime?
-  createdAt            DateTime  @default(now()) @map("created_at")
-  updatedAt            DateTime  @updatedAt @map("updated_at")
-  
-  // Nowe pola IP
-  registrationIp       String?   @map("registration_ip")
-  lastLoginIp          String?   @map("last_login_ip")
-  lastLoginAt          DateTime? @map("last_login_at")
-  
+  createdAt            DateTime       @default(now()) @map("created_at")
+  updatedAt            DateTime       @updatedAt @map("updated_at")
+  lastLoginAt          DateTime?      @map("last_login_at")
+  lastLoginIp          String?        @map("last_login_ip")
+  registrationIp       String?        @map("registration_ip")
+  pendingBalance       Decimal?       @default(0) @map("pending_balance") @db.Decimal(10, 6)
+  earnings             DailyEarning[]
+  ipLogs               IpLog[]
   links                Link[]
   payouts              Payout[]
-  ipLogs               IpLog[]
 
   @@map("users")
 }
 
 model Link {
-  id          String   @id @default(cuid())
-  userId      String   @map("user_id")
-  originalUrl String   @map("original_url")
-  shortCode   String   @unique @map("short_code")
-  title       String?
-  description String?
-  totalClicks Int      @default(0) @map("total_clicks")
-  totalEarned Decimal  @default(0) @map("total_earned") @db.Decimal(10, 4)
-  is_active   Boolean  @default(true)
-  createdAt   DateTime @default(now()) @map("created_at")
-  updated_at  DateTime @updatedAt
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  visits      Visit[]
+  id           String   @id @default(cuid())
+  userId       String   @map("user_id")
+  originalUrl  String   @map("original_url")
+  shortCode    String   @unique @map("short_code")
+  title        String?
+  description  String?
+  totalClicks  Int      @default(0) @map("total_clicks")
+  totalEarned  Decimal  @default(0) @map("total_earned") @db.Decimal(10, 4)
+  is_active    Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updated_at   DateTime @updatedAt
+  uniqueClicks Int?     @default(0) @map("unique_clicks")
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  visits       Visit[]
 
   @@index([userId])
   @@index([shortCode])
@@ -55,40 +55,96 @@ model Link {
 }
 
 model Visit {
-  id          String   @id @default(cuid())
-  linkId      String   @map("link_id")
-  ip_address  String
-  encryptedIp String?  @map("encrypted_ip")
-  country     String?
-  city        String?
-  device      String?
-  browser     String?
-  userAgent   String?  @map("user_agent")
-  referer     String?
-  earned      Decimal  @default(0) @db.Decimal(10, 4)
-  completed   Boolean  @default(false)
-  createdAt   DateTime @default(now()) @map("created_at")
-  link        Link     @relation(fields: [linkId], references: [id], onDelete: Cascade)
+  id             String   @id @default(cuid())
+  linkId         String   @map("link_id")
+  ip_address     String
+  country        String?
+  city           String?
+  device         String?
+  browser        String?
+  referer        String?
+  earned         Decimal  @default(0) @db.Decimal(10, 4)
+  completed      Boolean  @default(false)
+  createdAt      DateTime @default(now()) @map("created_at")
+  encryptedIp    String?  @map("encrypted_ip")
+  userAgent      String?  @map("user_agent")
+  ipHash         String   @map("ip_hash") @db.VarChar(64)
+  countryTier    Int?     @default(3) @map("country_tier")
+  platformEarned Decimal? @default(0) @map("platform_earned") @db.Decimal(10, 6)
+  cpmRateUsed    Decimal? @default(0) @map("cpm_rate_used") @db.Decimal(10, 4)
+  isUnique       Boolean? @default(true) @map("is_unique")
+  adDisplayed    Boolean? @default(false) @map("ad_displayed")
+  fraudBlocked   Boolean? @default(false) @map("fraud_blocked")
+  blockReason    String?  @map("block_reason") @db.VarChar(255)
+  link           Link     @relation(fields: [linkId], references: [id], onDelete: Cascade)
 
   @@index([linkId])
   @@index([createdAt])
+  @@index([country], map: "idx_visits_country")
+  @@index([ipHash], map: "idx_visits_ip_hash")
+  @@index([ipHash, linkId, createdAt], map: "idx_visits_ip_hash_link_created")
+  @@index([isUnique], map: "idx_visits_is_unique")
   @@index([ip_address])
   @@map("visits")
 }
 
 model CpmRate {
-  id          String   @id @default(cuid())
-  countryCode String   @unique @map("country_code")
-  countryName String   @map("country_name")
-  tier        Int      @default(3)
-  cpmRate     Decimal  @map("cpm_rate") @db.Decimal(10, 4)
-  isActive    Boolean  @default(true) @map("is_active")
-  updatedAt   DateTime @updatedAt @map("updated_at")
-  updated_by  String?
+  id           String    @id @default(cuid())
+  countryCode  String    @unique @map("country_code")
+  countryName  String    @map("country_name")
+  tier         Int       @default(3)
+  cpm_rate     Decimal   @db.Decimal(10, 4)
+  isActive     Boolean   @default(true) @map("is_active")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+  updated_by   String?
+  baseCpm      Decimal   @map("base_cpm") @db.Decimal(10, 4)
+  userCpm      Decimal   @map("user_cpm") @db.Decimal(10, 4)
+  source       String?   @default("manual") @db.VarChar(20)
+  lastVerified DateTime? @map("last_verified") @db.Timestamp(6)
 
   @@index([isActive])
   @@index([tier])
   @@map("cpm_rates")
+}
+
+model DailyEarning {
+  id               String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId           String    @map("user_id")
+  date             DateTime  @db.Date
+  country          String?   @default("XX") @db.VarChar(10)
+  visits           Int?      @default(0)
+  uniqueVisits     Int?      @default(0) @map("unique_visits")
+  userEarnings     Decimal?  @default(0) @map("user_earnings") @db.Decimal(10, 6)
+  platformEarnings Decimal?  @default(0) @map("platform_earnings") @db.Decimal(10, 6)
+  status           String?   @default("pending") @db.VarChar(20)
+  createdAt        DateTime? @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt        DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamp(6)
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([userId, date, country])
+  @@index([date], map: "idx_daily_earnings_date")
+  @@index([status], map: "idx_daily_earnings_status")
+  @@index([userId], map: "idx_daily_earnings_user")
+  @@map("daily_earnings")
+}
+
+model AdsterraSync {
+  id               String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  date             DateTime  @unique @db.Date
+  adsterraRevenue  Decimal?  @default(0) @map("adsterra_revenue") @db.Decimal(10, 4)
+  impressions      Int?      @default(0)
+  clicks           Int?      @default(0)
+  ourVisits        Int?      @default(0) @map("our_visits")
+  ourUserPayout    Decimal?  @default(0) @map("our_user_payout") @db.Decimal(10, 4)
+  ourPlatformCut   Decimal?  @default(0) @map("our_platform_cut") @db.Decimal(10, 4)
+  discrepancy      Decimal?  @db.Decimal(10, 2)
+  correctionFactor Decimal?  @default(1.0) @map("correction_factor") @db.Decimal(10, 4)
+  status           String?   @default("pending") @db.VarChar(20)
+  notes            String?
+  createdAt        DateTime? @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt        DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  @@map("adsterra_sync")
 }
 
 model Payout {
@@ -147,11 +203,11 @@ model cpm_rate_history {
 model IpLog {
   id          String   @id @default(cuid())
   userId      String   @map("user_id")
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   encryptedIp String   @map("encrypted_ip")
   action      String
   userAgent   String?  @map("user_agent")
   createdAt   DateTime @default(now()) @map("created_at")
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([createdAt])
