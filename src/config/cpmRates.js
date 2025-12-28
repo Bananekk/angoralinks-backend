@@ -12,7 +12,7 @@
 const EARNINGS_CONFIG = {
     USER_SHARE: 0.85,              // Użytkownik dostaje 85%
     PLATFORM_SHARE: 0.15,          // Platforma zatrzymuje 15%
-    MIN_PAYOUT: 5.00,              // Minimalna wypłata w USD
+    MIN_PAYOUT: 10.00,              // Minimalna wypłata w USD
     UNIQUENESS_WINDOW_HOURS: 24,   // Okno unikalności wizyty (24h)
     MAX_VISITS_PER_IP_PER_LINK: 1, // Max wizyt z jednego IP na link dziennie
     MAX_VISITS_PER_IP_DAILY: 50,   // Max wizyt z jednego IP dziennie (wszystkie linki)

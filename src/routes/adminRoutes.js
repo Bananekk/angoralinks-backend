@@ -1375,76 +1375,43 @@ router.get('/adsterra-stats', async (req, res) => {
 });
 
 // ======================
-// ZARZĄDZANIE STAWKAMI CPM
+// ZARZĄDZANIE STAWKAMI CPM (używa linkService)
 // ======================
 
-const { getAllCpmRates, getCpmRateForCountry, EARNINGS_CONFIG } = require('../config/cpmRates');
+const linkService = require('../services/linkService');
 const earningsService = require('../services/earningsService');
 
-// Pobierz wszystkie stawki CPM
+// Pobierz wszystkie stawki CPM (dla admina)
 router.get('/cpm-rates', async (req, res) => {
     try {
-        // Pobierz stawki z bazy
-        const dbRates = await prisma.cpmRate.findMany({
-            orderBy: [{ tier: 'asc' }, { baseCpm: 'desc' }]
-        });
+        const rates = await linkService.getAllRates();
+        const commission = await linkService.getPlatformCommission();
 
-        // Pobierz stawki z konfiguracji
-        const configRates = getAllCpmRates();
-
-        // Połącz - baza ma priorytet
-        const dbRatesMap = new Map(dbRates.map(r => [r.countryCode, r]));
-        
-        const mergedRates = configRates.map(configRate => {
-            const dbRate = dbRatesMap.get(configRate.countryCode);
-            
-            if (dbRate) {
-                return {
-                    countryCode: dbRate.countryCode,
-                    countryName: dbRate.countryName,
-                    tier: dbRate.tier,
-                    baseCpm: parseFloat(dbRate.baseCpm),
-                    userCpm: parseFloat(dbRate.userCpm),
-                    perVisit: parseFloat(dbRate.userCpm) / 1000,
-                    source: 'database',
-                    isActive: dbRate.isActive,
-                    lastVerified: dbRate.lastVerified,
-                    updatedAt: dbRate.updatedAt
-                };
-            }
-            
+        // Wzbogać o obliczone wartości
+        const enrichedRates = rates.map(rate => {
+            const grossCpm = parseFloat(rate.cpmRate);
+            const userCpm = grossCpm * (1 - commission);
             return {
-                ...configRate,
-                source: 'config',
-                isActive: true
+                countryCode: rate.countryCode,
+                countryName: rate.countryName,
+                tier: rate.tier,
+                baseCpm: grossCpm,          // To samo co cpmRate - dla kompatybilności z frontem
+                userCpm: userCpm,
+                perVisit: userCpm / 1000,
+                source: 'database',
+                isActive: rate.isActive
             };
         });
-
-        // Dodaj stawki z bazy których nie ma w konfiguracji
-        for (const [code, dbRate] of dbRatesMap) {
-            if (!configRates.find(c => c.countryCode === code)) {
-                mergedRates.push({
-                    countryCode: dbRate.countryCode,
-                    countryName: dbRate.countryName,
-                    tier: dbRate.tier,
-                    baseCpm: parseFloat(dbRate.baseCpm),
-                    userCpm: parseFloat(dbRate.userCpm),
-                    perVisit: parseFloat(dbRate.userCpm) / 1000,
-                    source: 'database',
-                    isActive: dbRate.isActive
-                });
-            }
-        }
 
         res.json({
             success: true,
             config: {
-                userShare: EARNINGS_CONFIG.USER_SHARE,
-                platformShare: EARNINGS_CONFIG.PLATFORM_SHARE,
-                minPayout: EARNINGS_CONFIG.MIN_PAYOUT
+                userShare: 1 - commission,      // np. 0.85
+                platformShare: commission,      // np. 0.15
+                minPayout: 10.00
             },
-            rates: mergedRates.sort((a, b) => a.tier - b.tier || b.baseCpm - a.baseCpm),
-            totalCountries: mergedRates.length
+            rates: enrichedRates.sort((a, b) => a.tier - b.tier || b.baseCpm - a.baseCpm),
+            totalCountries: enrichedRates.length
         });
 
     } catch (error) {
@@ -1457,169 +1424,41 @@ router.get('/cpm-rates', async (req, res) => {
 router.put('/cpm-rates/:countryCode', async (req, res) => {
     try {
         const { countryCode } = req.params;
-        const { baseCpm, tier, countryName, isActive } = req.body;
+        const { baseCpm } = req.body;
 
         if (baseCpm === undefined || baseCpm < 0) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'baseCpm musi być liczbą >= 0' 
+            return res.status(400).json({
+                success: false,
+                message: 'baseCpm musi być liczbą >= 0'
             });
         }
 
-        const userCpm = baseCpm * EARNINGS_CONFIG.USER_SHARE;
-        const code = countryCode.toUpperCase();
+        // Użyj linkService do aktualizacji (obsługuje historię i cache)
+        const updated = await linkService.updateRate(
+            countryCode.toUpperCase(),
+            parseFloat(baseCpm),
+            req.userId || 'admin'
+        );
 
-        // Pobierz aktualną stawkę (jeśli istnieje)
-        const currentRate = await prisma.cpmRate.findUnique({
-            where: { countryCode: code }
-        });
-
-        // Zapisz historię zmian
-        if (currentRate) {
-            await prisma.cpm_rate_history.create({
-                data: {
-                    country_code: code,
-                    old_rate: currentRate.baseCpm,
-                    new_rate: baseCpm,
-                    changed_by: req.userId || 'admin'
-                }
-            });
-        }
-
-        // Upsert stawki
-        const rate = await prisma.cpmRate.upsert({
-            where: { countryCode: code },
-            create: {
-                countryCode: code,
-                countryName: countryName || getCpmRateForCountry(code).countryName,
-                tier: tier || 3,
-                baseCpm: baseCpm,
-                userCpm: userCpm,
-                isActive: isActive !== false,
-                source: 'manual',
-                lastVerified: new Date()
-            },
-            update: {
-                baseCpm: baseCpm,
-                userCpm: userCpm,
-                tier: tier !== undefined ? tier : undefined,
-                countryName: countryName || undefined,
-                isActive: isActive !== undefined ? isActive : undefined,
-                source: 'manual',
-                lastVerified: new Date()
-            }
-        });
+        const commission = await linkService.getPlatformCommission();
+        const userCpm = parseFloat(baseCpm) * (1 - commission);
 
         res.json({
             success: true,
-            message: `Stawka CPM dla ${code} zaktualizowana`,
+            message: `Stawka CPM dla ${countryCode} zaktualizowana`,
             rate: {
-                ...rate,
-                baseCpm: parseFloat(rate.baseCpm),
-                userCpm: parseFloat(rate.userCpm),
-                perVisit: parseFloat(rate.userCpm) / 1000
+                countryCode: updated.countryCode,
+                countryName: updated.countryName,
+                tier: updated.tier,
+                baseCpm: parseFloat(baseCpm),
+                userCpm: userCpm,
+                perVisit: userCpm / 1000
             }
         });
 
     } catch (error) {
         console.error('Błąd aktualizacji stawki CPM:', error);
-        res.status(500).json({ success: false, message: 'Błąd serwera' });
-    }
-});
-
-// Bulk update stawek (wiele krajów naraz)
-router.post('/cpm-rates/bulk', async (req, res) => {
-    try {
-        const { rates } = req.body;
-
-        if (!Array.isArray(rates) || rates.length === 0) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'rates musi być niepustą tablicą' 
-            });
-        }
-
-        const results = [];
-        
-        for (const rate of rates) {
-            if (!rate.countryCode || rate.baseCpm === undefined) continue;
-
-            const code = rate.countryCode.toUpperCase();
-            const userCpm = rate.baseCpm * EARNINGS_CONFIG.USER_SHARE;
-
-            const updated = await prisma.cpmRate.upsert({
-                where: { countryCode: code },
-                create: {
-                    countryCode: code,
-                    countryName: rate.countryName || code,
-                    tier: rate.tier || 3,
-                    baseCpm: rate.baseCpm,
-                    userCpm: userCpm,
-                    isActive: true,
-                    source: 'bulk_update'
-                },
-                update: {
-                    baseCpm: rate.baseCpm,
-                    userCpm: userCpm,
-                    tier: rate.tier,
-                    source: 'bulk_update',
-                    lastVerified: new Date()
-                }
-            });
-            
-            results.push(updated);
-        }
-
-        res.json({
-            success: true,
-            message: `Zaktualizowano ${results.length} stawek`,
-            updated: results.length
-        });
-
-    } catch (error) {
-        console.error('Błąd bulk update:', error);
-        res.status(500).json({ success: false, message: 'Błąd serwera' });
-    }
-});
-
-// Synchronizuj stawki z konfiguracji do bazy
-router.post('/cpm-rates/sync-from-config', async (req, res) => {
-    try {
-        const configRates = getAllCpmRates();
-        let synced = 0;
-
-        for (const rate of configRates) {
-            // Nie nadpisuj istniejących stawek w bazie
-            const exists = await prisma.cpmRate.findUnique({
-                where: { countryCode: rate.countryCode }
-            });
-
-            if (!exists) {
-                await prisma.cpmRate.create({
-                    data: {
-                        countryCode: rate.countryCode,
-                        countryName: rate.countryName,
-                        tier: rate.tier,
-                        baseCpm: rate.baseCpm,
-                        userCpm: rate.userCpm,
-                        isActive: true,
-                        source: 'config_sync'
-                    }
-                });
-                synced++;
-            }
-        }
-
-        res.json({
-            success: true,
-            message: `Zsynchronizowano ${synced} nowych stawek z konfiguracji`,
-            synced,
-            total: configRates.length
-        });
-
-    } catch (error) {
-        console.error('Błąd synchronizacji:', error);
-        res.status(500).json({ success: false, message: 'Błąd serwera' });
+        res.status(500).json({ success: false, message: error.message || 'Błąd serwera' });
     }
 });
 
@@ -1629,7 +1468,6 @@ router.get('/earnings-by-country', async (req, res) => {
         const { days = 30 } = req.query;
         const stats = await earningsService.getEarningsStatsByCountry(parseInt(days));
 
-        // Podsumowanie
         const totals = stats.reduce((acc, s) => ({
             totalVisits: acc.totalVisits + s.totalVisits,
             uniqueVisits: acc.uniqueVisits + s.uniqueVisits,
@@ -1650,93 +1488,19 @@ router.get('/earnings-by-country', async (req, res) => {
     }
 });
 
-// Raport rozbieżności (porównanie z Adsterra)
-router.get('/earnings-discrepancy', async (req, res) => {
-    try {
-        const { days = 7 } = req.query;
-        const since = new Date();
-        since.setDate(since.getDate() - parseInt(days));
-
-        // Nasze dane
-        const ourStats = await prisma.visit.aggregate({
-            where: { 
-                createdAt: { gte: since },
-                isUnique: true
-            },
-            _count: { id: true },
-            _sum: { earned: true, platformEarned: true }
-        });
-
-        // Dane z synchronizacji Adsterra
-        const adsterraSync = await prisma.adsterraSync.findMany({
-            where: { date: { gte: since } },
-            orderBy: { date: 'desc' }
-        });
-
-        const adsterraTotals = adsterraSync.reduce((acc, s) => ({
-            revenue: acc.revenue + parseFloat(s.adsterraRevenue || 0),
-            impressions: acc.impressions + s.impressions
-        }), { revenue: 0, impressions: 0 });
-
-        const ourTotal = parseFloat(ourStats._sum.earned || 0) + 
-                        parseFloat(ourStats._sum.platformEarned || 0);
-        
-        const discrepancy = adsterraTotals.revenue > 0
-            ? ((ourTotal - adsterraTotals.revenue) / adsterraTotals.revenue * 100)
-            : 0;
-
-        res.json({
-            success: true,
-            period: `${days} dni`,
-            our: {
-                uniqueVisits: ourStats._count.id,
-                userPayout: parseFloat(ourStats._sum.earned || 0),
-                platformCut: parseFloat(ourStats._sum.platformEarned || 0),
-                total: ourTotal
-            },
-            adsterra: {
-                revenue: adsterraTotals.revenue,
-                impressions: adsterraTotals.impressions,
-                syncs: adsterraSync.length
-            },
-            discrepancy: {
-                percent: discrepancy.toFixed(2),
-                status: Math.abs(discrepancy) < 10 ? 'OK' : 
-                        discrepancy > 0 ? 'OVERPAYING' : 'UNDERPAYING',
-                message: Math.abs(discrepancy) < 10 
-                    ? 'Stawki są dobrze skalibrowane'
-                    : discrepancy > 0 
-                        ? `Przepłacasz użytkowników o ${discrepancy.toFixed(1)}%`
-                        : `Niedopłacasz użytkowników o ${Math.abs(discrepancy).toFixed(1)}%`
-            }
-        });
-
-    } catch (error) {
-        console.error('Błąd raportu rozbieżności:', error);
-        res.status(500).json({ success: false, message: 'Błąd serwera' });
-    }
-});
-
 // Historia zmian stawek CPM
 router.get('/cpm-rates/history', async (req, res) => {
     try {
         const { countryCode, limit = 50 } = req.query;
-
-        const where = countryCode ? { country_code: countryCode.toUpperCase() } : {};
-
-        const history = await prisma.cpm_rate_history.findMany({
-            where,
-            orderBy: { changed_at: 'desc' },
-            take: parseInt(limit)
-        });
+        const history = await linkService.getRateHistory(countryCode, parseInt(limit));
 
         res.json({
             success: true,
             history: history.map(h => ({
                 ...h,
-                old_rate: parseFloat(h.old_rate),
-                new_rate: parseFloat(h.new_rate),
-                change: ((parseFloat(h.new_rate) - parseFloat(h.old_rate)) / parseFloat(h.old_rate) * 100).toFixed(2) + '%'
+                old_rate: parseFloat(h.oldRate),
+                new_rate: parseFloat(h.newRate),
+                change: ((parseFloat(h.newRate) - parseFloat(h.oldRate)) / parseFloat(h.oldRate) * 100).toFixed(2) + '%'
             }))
         });
 
