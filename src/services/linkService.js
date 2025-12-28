@@ -3,24 +3,20 @@ const { PrismaClient } = require('@prisma/client');
 
 const prisma = new PrismaClient();
 
-// Generator krótkich kodów (bezpieczne znaki, bez mylących: 0,O,l,1)
 const generateCode = customAlphabet('abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789', 6);
 
 class LinkService {
     constructor() {
-        // Cache dla stawek CPM
         this.ratesCache = null;
         this.settingsCache = null;
         this.cacheExpiry = null;
-        this.CACHE_TTL = 5 * 60 * 1000; // 5 minut
+        this.CACHE_TTL = 5 * 60 * 1000;
     }
 
-    // Generuj unikalny krótki kod
     generateShortCode() {
         return generateCode();
     }
 
-    // Walidacja URL
     isValidUrl(url) {
         try {
             const parsed = new URL(url);
@@ -32,7 +28,6 @@ class LinkService {
 
     // ===== SYSTEM CPM =====
 
-    // Pobierz ustawienia platformy z cache
     async getSettings() {
         if (this.settingsCache && this.cacheExpiry > Date.now()) {
             return this.settingsCache;
@@ -41,14 +36,13 @@ class LinkService {
         try {
             const settings = await prisma.platformSettings.findMany();
             this.settingsCache = settings.reduce((acc, s) => {
-                acc[s.settingKey] = s.settingValue;
+                acc[s.setting_key] = s.setting_value;
                 return acc;
             }, {});
             this.cacheExpiry = Date.now() + this.CACHE_TTL;
             return this.settingsCache;
         } catch (error) {
             console.error('Błąd pobierania ustawień:', error);
-            // Domyślne wartości jeśli baza niedostępna
             return {
                 platform_commission: '0.15',
                 default_tier3_cpm: '0.40'
@@ -56,13 +50,11 @@ class LinkService {
         }
     }
 
-    // Pobierz prowizję platformy
     async getPlatformCommission() {
         const settings = await this.getSettings();
         return parseFloat(settings.platform_commission || '0.15');
     }
 
-    // Pobierz wszystkie stawki CPM z cache
     async getAllRates() {
         if (this.ratesCache && this.cacheExpiry > Date.now()) {
             return this.ratesCache;
@@ -71,7 +63,7 @@ class LinkService {
         try {
             const rates = await prisma.cpmRate.findMany({
                 where: { isActive: true },
-                orderBy: [{ tier: 'asc' }, { cpmRate: 'desc' }]
+                orderBy: [{ tier: 'asc' }, { cpm_rate: 'desc' }]  // ← ZMIANA: cpm_rate
             });
             this.ratesCache = rates;
             this.cacheExpiry = Date.now() + this.CACHE_TTL;
@@ -82,7 +74,6 @@ class LinkService {
         }
     }
 
-    // Pobierz stawkę dla konkretnego kraju
     async getRateForCountry(countryCode) {
         if (!countryCode) {
             return this.getDefaultRate();
@@ -94,7 +85,13 @@ class LinkService {
             });
 
             if (rate && rate.isActive) {
-                return rate;
+                return {
+                    countryCode: rate.countryCode,
+                    countryName: rate.countryName,
+                    tier: rate.tier,
+                    cpmRate: parseFloat(rate.cpm_rate),  // ← ZMIANA: cpm_rate → cpmRate
+                    isActive: rate.isActive
+                };
             }
 
             return this.getDefaultRate();
@@ -104,7 +101,6 @@ class LinkService {
         }
     }
 
-    // Domyślna stawka dla nieznanych krajów
     async getDefaultRate() {
         const settings = await this.getSettings();
         return {
@@ -115,19 +111,17 @@ class LinkService {
         };
     }
 
-    // 🔥 GŁÓWNA FUNKCJA - Oblicz zarobek za kliknięcie
     async calculateEarning(country) {
         const rate = await this.getRateForCountry(country);
         const commission = await this.getPlatformCommission();
         
         const grossCpm = parseFloat(rate.cpmRate);
-        const netCpm = grossCpm * (1 - commission); // CPM po odjęciu prowizji
-        const earningPerClick = netCpm / 1000; // Zarobek za pojedyncze kliknięcie
+        const netCpm = grossCpm * (1 - commission);
+        const earningPerClick = netCpm / 1000;
         
         return earningPerClick;
     }
 
-    // Szczegółowe informacje o zarobku (dla API)
     async getEarningDetails(countryCode) {
         const rate = await this.getRateForCountry(countryCode);
         const commission = await this.getPlatformCommission();
@@ -147,7 +141,6 @@ class LinkService {
         };
     }
 
-    // Pobierz stawki pogrupowane według tierów (dla dashboardu)
     async getRatesGroupedByTier() {
         const rates = await this.getAllRates();
         const commission = await this.getPlatformCommission();
@@ -159,7 +152,7 @@ class LinkService {
         };
 
         rates.forEach(rate => {
-            const grossCpm = parseFloat(rate.cpmRate);
+            const grossCpm = parseFloat(rate.cpm_rate);  // ← ZMIANA: cpm_rate
             const netCpm = grossCpm * (1 - commission);
             const earningPerClick = netCpm / 1000;
 
@@ -185,7 +178,6 @@ class LinkService {
 
     // ===== ADMIN FUNCTIONS =====
 
-    // Aktualizuj stawkę CPM dla kraju
     async updateRate(countryCode, newCpmRate, adminId) {
         const existingRate = await prisma.cpmRate.findUnique({
             where: { countryCode }
@@ -196,36 +188,50 @@ class LinkService {
         }
 
         // Zapisz historię zmiany
-        await prisma.cpmRateHistory.create({
+        await prisma.cpm_rate_history.create({
             data: {
-                countryCode,
-                oldRate: existingRate.cpmRate,
-                newRate: newCpmRate,
-                changedBy: adminId
+                country_code: countryCode,
+                old_rate: existingRate.cpm_rate,  // ← ZMIANA: cpm_rate
+                new_rate: newCpmRate,
+                changed_by: adminId
             }
         });
 
-        // Aktualizuj stawkę
+        // Aktualizuj stawkę - wszystkie pola CPM
         const updated = await prisma.cpmRate.update({
             where: { countryCode },
             data: {
-                cpmRate: newCpmRate,
-                updatedBy: adminId
+                cpm_rate: newCpmRate,
+                baseCpm: newCpmRate,
+                userCpm: newCpmRate * 0.85,  // 85% dla użytkownika
+                updated_by: adminId,
+                lastVerified: new Date()
             }
         });
 
-        // Wyczyść cache
         this.clearCache();
 
-        return updated;
+        return {
+            countryCode: updated.countryCode,
+            countryName: updated.countryName,
+            tier: updated.tier,
+            cpmRate: parseFloat(updated.cpm_rate)
+        };
     }
 
-    // Dodaj nowy kraj
     async addCountry(data, adminId) {
+        const cpmRate = parseFloat(data.cpmRate || data.cpm_rate);
+        
         const rate = await prisma.cpmRate.create({
             data: {
-                ...data,
-                updatedBy: adminId
+                countryCode: data.countryCode,
+                countryName: data.countryName,
+                tier: data.tier || 3,
+                cpm_rate: cpmRate,
+                baseCpm: cpmRate,
+                userCpm: cpmRate * 0.85,
+                updated_by: adminId,
+                isActive: true
             }
         });
 
@@ -233,18 +239,17 @@ class LinkService {
         return rate;
     }
 
-    // Aktualizuj ustawienie
     async updateSetting(key, value, adminId) {
         const updated = await prisma.platformSettings.upsert({
-            where: { settingKey: key },
+            where: { setting_key: key },
             update: {
-                settingValue: value,
-                updatedBy: adminId
+                setting_value: value,
+                updated_by: adminId
             },
             create: {
-                settingKey: key,
-                settingValue: value,
-                updatedBy: adminId
+                setting_key: key,
+                setting_value: value,
+                updated_by: adminId
             }
         });
 
@@ -252,13 +257,13 @@ class LinkService {
         return updated;
     }
 
-    // Bulk update stawek
     async bulkUpdateRates(rates, adminId) {
         const results = [];
         
         for (const rate of rates) {
             try {
-                const result = await this.updateRate(rate.countryCode, rate.cpmRate, adminId);
+                const cpmValue = rate.cpmRate || rate.cpm_rate || rate.baseCpm;
+                const result = await this.updateRate(rate.countryCode, cpmValue, adminId);
                 results.push({ success: true, countryCode: rate.countryCode, result });
             } catch (error) {
                 results.push({ success: false, countryCode: rate.countryCode, error: error.message });
@@ -268,18 +273,16 @@ class LinkService {
         return results;
     }
 
-    // Historia zmian stawek
     async getRateHistory(countryCode = null, limit = 50) {
-        const where = countryCode ? { countryCode } : {};
+        const where = countryCode ? { country_code: countryCode } : {};
         
-        return prisma.cpmRateHistory.findMany({
+        return prisma.cpm_rate_history.findMany({
             where,
-            orderBy: { changedAt: 'desc' },
+            orderBy: { changed_at: 'desc' },
             take: limit
         });
     }
 
-    // Wyczyść cache
     clearCache() {
         this.ratesCache = null;
         this.settingsCache = null;
@@ -288,7 +291,6 @@ class LinkService {
 
     // ===== DEVICE DETECTION =====
 
-    // Wykryj urządzenie z User-Agent
     detectDevice(userAgent) {
         if (!userAgent) return 'unknown';
         
@@ -303,7 +305,6 @@ class LinkService {
         return 'desktop';
     }
 
-    // Wykryj przeglądarkę
     detectBrowser(userAgent) {
         if (!userAgent) return 'unknown';
         
