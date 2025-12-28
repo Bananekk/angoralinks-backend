@@ -22,6 +22,20 @@ class LinkController {
                 });
             }
 
+            // Walidacja tytułu
+            if (title && title.length > 100) {
+                return res.status(400).json({
+                    error: 'Tytuł może mieć maksymalnie 100 znaków'
+                });
+            }
+
+            // Walidacja opisu
+            if (description && description.length > 500) {
+                return res.status(400).json({
+                    error: 'Opis może mieć maksymalnie 500 znaków'
+                });
+            }
+
             // Generuj unikalny kod
             let shortCode;
             let exists = true;
@@ -51,8 +65,10 @@ class LinkController {
                     shortCode: newLink.shortCode,
                     shortUrl: `${process.env.APP_URL}/l/${newLink.shortCode}`,
                     title: newLink.title,
+                    description: newLink.description,
                     totalClicks: newLink.totalClicks,
                     totalEarned: parseFloat(newLink.totalEarned),
+                    isActive: newLink.is_active,
                     createdAt: newLink.createdAt
                 }
             });
@@ -82,9 +98,10 @@ class LinkController {
                     shortCode: link.shortCode,
                     shortUrl: `${process.env.APP_URL}/l/${link.shortCode}`,
                     title: link.title,
+                    description: link.description,
                     totalClicks: link.totalClicks,
                     totalEarned: parseFloat(link.totalEarned),
-                    isActive: link.isActive,
+                    isActive: link.is_active,
                     createdAt: link.createdAt
                 })),
                 total: links.length
@@ -130,7 +147,7 @@ class LinkController {
                     description: link.description,
                     totalClicks: link.totalClicks,
                     totalEarned: parseFloat(link.totalEarned),
-                    isActive: link.isActive,
+                    isActive: link.is_active,
                     createdAt: link.createdAt
                 },
                 recentVisits: link.visits
@@ -144,13 +161,14 @@ class LinkController {
         }
     }
 
-    // PUT /api/links/:id
+    // PUT /api/links/:id - ROZBUDOWANA WERSJA
     async update(req, res) {
         try {
             const { id } = req.params;
-            const { title, description, isActive } = req.body;
+            const { originalUrl, title, description, isActive } = req.body;
             const userId = req.user.id;
 
+            // Sprawdź czy link istnieje i należy do użytkownika
             const link = await prisma.link.findFirst({
                 where: { id, userId }
             });
@@ -161,13 +179,58 @@ class LinkController {
                 });
             }
 
+            // Walidacja URL jeśli podany
+            if (originalUrl !== undefined) {
+                if (!originalUrl || originalUrl.trim() === '') {
+                    return res.status(400).json({
+                        error: 'URL nie może być pusty'
+                    });
+                }
+
+                if (!linkService.isValidUrl(originalUrl)) {
+                    return res.status(400).json({
+                        error: 'Nieprawidłowy format URL. URL musi zaczynać się od http:// lub https://'
+                    });
+                }
+            }
+
+            // Walidacja tytułu
+            if (title !== undefined && title !== null && title.length > 100) {
+                return res.status(400).json({
+                    error: 'Tytuł może mieć maksymalnie 100 znaków'
+                });
+            }
+
+            // Walidacja opisu
+            if (description !== undefined && description !== null && description.length > 500) {
+                return res.status(400).json({
+                    error: 'Opis może mieć maksymalnie 500 znaków'
+                });
+            }
+
+            // Przygotuj dane do aktualizacji
+            const updateData = {};
+
+            if (originalUrl !== undefined) {
+                updateData.originalUrl = originalUrl.trim();
+            }
+
+            if (title !== undefined) {
+                updateData.title = title === '' ? null : title;
+            }
+
+            if (description !== undefined) {
+                updateData.description = description === '' ? null : description;
+            }
+
+            if (isActive !== undefined) {
+                updateData.is_active = Boolean(isActive);
+            }
+
+            // Aktualizuj link
             const updatedLink = await prisma.link.update({
                 where: { id },
-                data: {
-                    title: title !== undefined ? title : link.title,
-                    description: description !== undefined ? description : link.description,
-                    isActive: isActive !== undefined ? isActive : link.isActive
-                }
+                data: updateData
             });
 
             res.json({
@@ -176,17 +239,21 @@ class LinkController {
                     id: updatedLink.id,
                     originalUrl: updatedLink.originalUrl,
                     shortCode: updatedLink.shortCode,
+                    shortUrl: `${process.env.APP_URL}/l/${updatedLink.shortCode}`,
                     title: updatedLink.title,
                     description: updatedLink.description,
-                    isActive: updatedLink.isActive,
-                    updatedAt: updatedLink.updatedAt
+                    totalClicks: updatedLink.totalClicks,
+                    totalEarned: parseFloat(updatedLink.totalEarned),
+                    isActive: updatedLink.is_active,
+                    createdAt: updatedLink.createdAt,
+                    updatedAt: updatedLink.updated_at
                 }
             });
 
         } catch (error) {
             console.error('Błąd aktualizacji linka:', error);
             res.status(500).json({
-                error: 'Błąd serwera'
+                error: 'Błąd serwera podczas aktualizacji linka'
             });
         }
     }
