@@ -74,32 +74,32 @@ class LinkService {
         }
     }
 
-    async getRateForCountry(countryCode) {
-        if (!countryCode) {
-            return this.getDefaultRate();
-        }
-
-        try {
-            const rate = await prisma.cpmRate.findUnique({
-                where: { countryCode: countryCode.toUpperCase() }
-            });
-
-            if (rate && rate.isActive) {
-                return {
-                    countryCode: rate.countryCode,
-                    countryName: rate.countryName,
-                    tier: rate.tier,
-                    cpmRate: parseFloat(rate.cpm_rate),  // ← ZMIANA: cpm_rate → cpmRate
-                    isActive: rate.isActive
-                };
-            }
-
-            return this.getDefaultRate();
-        } catch (error) {
-            console.error('Błąd pobierania stawki dla kraju:', error);
-            return this.getDefaultRate();
-        }
+  async getRateForCountry(countryCode) {
+    if (!countryCode) {
+        return this.getDefaultRate();
     }
+
+    try {
+        const rate = await prisma.cpmRate.findUnique({
+            where: { countryCode: countryCode.toUpperCase() }
+        });
+
+        if (rate && rate.isActive) {
+            return {
+                countryCode: rate.countryCode,
+                countryName: rate.countryName,
+                tier: rate.tier,
+                cpmRate: Number(rate.cpm_rate) || Number(rate.baseCpm) || 0,
+                isActive: rate.isActive
+            };
+        }
+
+        return this.getDefaultRate();
+    } catch (error) {
+        console.error('Błąd pobierania stawki dla kraju:', error);
+        return this.getDefaultRate();
+    }
+}
 
     async getDefaultRate() {
         const settings = await this.getSettings();
@@ -142,39 +142,40 @@ class LinkService {
     }
 
     async getRatesGroupedByTier() {
-        const rates = await this.getAllRates();
-        const commission = await this.getPlatformCommission();
-        
-        const grouped = {
-            tier1: [],
-            tier2: [],
-            tier3: []
+    const rates = await this.getAllRates();
+    const commission = await this.getPlatformCommission();
+    
+    const grouped = {
+        tier1: [],
+        tier2: [],
+        tier3: []
+    };
+
+    rates.forEach(rate => {
+        // Konwersja Prisma Decimal
+        const grossCpm = Number(rate.cpm_rate) || Number(rate.baseCpm) || 0;
+        const netCpm = grossCpm * (1 - commission);
+        const earningPerClick = netCpm / 1000;
+
+        const enrichedRate = {
+            countryCode: rate.countryCode,
+            countryName: rate.countryName,
+            grossCpm: grossCpm,
+            netCpm: parseFloat(netCpm.toFixed(4)),
+            earningPerClick: parseFloat(earningPerClick.toFixed(6))
         };
 
-        rates.forEach(rate => {
-            const grossCpm = parseFloat(rate.cpm_rate);  // ← ZMIANA: cpm_rate
-            const netCpm = grossCpm * (1 - commission);
-            const earningPerClick = netCpm / 1000;
+        if (rate.tier === 1) grouped.tier1.push(enrichedRate);
+        else if (rate.tier === 2) grouped.tier2.push(enrichedRate);
+        else grouped.tier3.push(enrichedRate);
+    });
 
-            const enrichedRate = {
-                countryCode: rate.countryCode,
-                countryName: rate.countryName,
-                grossCpm: grossCpm,
-                netCpm: parseFloat(netCpm.toFixed(4)),
-                earningPerClick: parseFloat(earningPerClick.toFixed(6))
-            };
-
-            if (rate.tier === 1) grouped.tier1.push(enrichedRate);
-            else if (rate.tier === 2) grouped.tier2.push(enrichedRate);
-            else grouped.tier3.push(enrichedRate);
-        });
-
-        return {
-            commission: commission,
-            commissionPercent: `${(commission * 100).toFixed(0)}%`,
-            tiers: grouped
-        };
-    }
+    return {
+        commission: commission,
+        commissionPercent: `${(commission * 100).toFixed(0)}%`,
+        tiers: grouped
+    };
+}
 
     // ===== ADMIN FUNCTIONS =====
 

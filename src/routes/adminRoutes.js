@@ -1387,17 +1387,18 @@ router.get('/cpm-rates', async (req, res) => {
         const rates = await linkService.getAllRates();
         const commission = await linkService.getPlatformCommission();
 
-        // Wzbogać o obliczone wartości
         const enrichedRates = rates.map(rate => {
-            const grossCpm = parseFloat(rate.cpmRate);
+            // Prisma Decimal wymaga konwersji przez Number() lub toString()
+            const grossCpm = Number(rate.cpm_rate) || Number(rate.baseCpm) || 0;
             const userCpm = grossCpm * (1 - commission);
+            
             return {
                 countryCode: rate.countryCode,
                 countryName: rate.countryName,
                 tier: rate.tier,
-                baseCpm: grossCpm,          // To samo co cpmRate - dla kompatybilności z frontem
-                userCpm: userCpm,
-                perVisit: userCpm / 1000,
+                baseCpm: grossCpm,
+                userCpm: parseFloat(userCpm.toFixed(4)),
+                perVisit: parseFloat((userCpm / 1000).toFixed(6)),
                 source: 'database',
                 isActive: rate.isActive
             };
@@ -1406,8 +1407,8 @@ router.get('/cpm-rates', async (req, res) => {
         res.json({
             success: true,
             config: {
-                userShare: 1 - commission,      // np. 0.85
-                platformShare: commission,      // np. 0.15
+                userShare: 1 - commission,
+                platformShare: commission,
                 minPayout: 10.00
             },
             rates: enrichedRates.sort((a, b) => a.tier - b.tier || b.baseCpm - a.baseCpm),
@@ -1415,7 +1416,7 @@ router.get('/cpm-rates', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Błąd pobierania stawek CPM:', error);
+        console.error('Błąd /cpm-rates:', error);
         res.status(500).json({ success: false, message: 'Błąd serwera' });
     }
 });
