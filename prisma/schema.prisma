@@ -25,11 +25,24 @@ model User {
   lastLoginIp          String?        @map("last_login_ip")
   registrationIp       String?        @map("registration_ip")
   pendingBalance       Decimal?       @default(0) @map("pending_balance") @db.Decimal(10, 6)
+  
+  // ========== POLA REFERALI ==========
+  referralCode          String?   @unique @map("referral_code")
+  referralEarnings      Decimal   @default(0) @map("referral_earnings") @db.Decimal(10, 4)
+  referredById          String?   @map("referred_by_id")
+  referredBy            User?     @relation("Referrals", fields: [referredById], references: [id])
+  referrals             User[]    @relation("Referrals")
+  referralBonusExpires  DateTime? @map("referral_bonus_expires")
+  
+  // ========== RELACJE ==========
   earnings             DailyEarning[]
   ipLogs               IpLog[]
   links                Link[]
   payouts              Payout[]
+  referralCommissions  ReferralCommission[] @relation("ReferrerCommissions")
+  generatedCommissions ReferralCommission[] @relation("ReferredCommissions")
 
+  @@index([referredById])
   @@map("users")
 }
 
@@ -76,7 +89,9 @@ model Visit {
   adDisplayed    Boolean? @default(false) @map("ad_displayed")
   fraudBlocked   Boolean? @default(false) @map("fraud_blocked")
   blockReason    String?  @map("block_reason") @db.VarChar(255)
-  link           Link     @relation(fields: [linkId], references: [id], onDelete: Cascade)
+  
+  link                 Link                 @relation(fields: [linkId], references: [id], onDelete: Cascade)
+  referralCommissions  ReferralCommission[]
 
   @@index([linkId])
   @@index([createdAt])
@@ -213,6 +228,43 @@ model IpLog {
   @@index([createdAt])
   @@map("ip_logs")
 }
+
+// ========== NOWE MODELE DLA SYSTEMU REFERALI ==========
+
+model ReferralCommission {
+  id              String    @id @default(cuid())
+  referrerId      String    @map("referrer_id")
+  referredId      String    @map("referred_id")
+  visitId         String?   @map("visit_id")
+  amount          Decimal   @db.Decimal(10, 6)
+  referredEarning Decimal   @map("referred_earning") @db.Decimal(10, 6)
+  commissionRate  Decimal   @map("commission_rate") @db.Decimal(5, 4)
+  status          String    @default("processed") @db.VarChar(20)
+  createdAt       DateTime  @default(now()) @map("created_at")
+  processedAt     DateTime? @map("processed_at")
+  
+  referrer User   @relation("ReferrerCommissions", fields: [referrerId], references: [id], onDelete: Cascade)
+  referred User   @relation("ReferredCommissions", fields: [referredId], references: [id], onDelete: Cascade)
+  visit    Visit? @relation(fields: [visitId], references: [id], onDelete: SetNull)
+
+  @@index([referrerId])
+  @@index([referredId])
+  @@index([createdAt])
+  @@map("referral_commissions")
+}
+
+model SystemSettings {
+  id                     String   @id @default("settings")
+  referralCommissionRate Decimal  @default(0.10) @map("referral_commission_rate") @db.Decimal(5, 4)
+  referralBonusDuration  Int?     @map("referral_bonus_duration")
+  minReferralPayout      Decimal  @default(5.00) @map("min_referral_payout") @db.Decimal(10, 2)
+  referralSystemActive   Boolean  @default(true) @map("referral_system_active")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  @@map("system_settings")
+}
+
+// ========== ENUMY ==========
 
 enum PayoutMethod {
   PAYPAL

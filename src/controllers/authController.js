@@ -1,6 +1,9 @@
+// controllers/authController.js
 const authService = require('../services/authService');
 const emailUtils = require('../utils/email');
+const ReferralService = require('../services/referralService');
 const { PrismaClient } = require('@prisma/client');
+const crypto = require('crypto');
 
 const prisma = new PrismaClient();
 
@@ -8,7 +11,7 @@ class AuthController {
     // POST /api/auth/register
     async register(req, res) {
         try {
-            const { email, password, confirmPassword } = req.body;
+            const { email, password, confirmPassword, referralCode } = req.body;
 
             if (!email || !password || !confirmPassword) {
                 return res.status(400).json({ error: 'Wszystkie pola są wymagane' });
@@ -31,20 +34,51 @@ class AuthController {
                 return res.status(409).json({ error: 'Użytkownik z tym emailem już istnieje' });
             }
 
+            // Waliduj kod polecający (jeśli podany)
+            let referrerData = null;
+            if (referralCode) {
+                referrerData = await ReferralService.validateReferralCode(referralCode);
+                // Nie zwracaj błędu jeśli kod jest nieprawidłowy - po prostu zignoruj
+            }
+
+            // Generuj unikalny kod polecający dla nowego użytkownika
+            let userReferralCode;
+            let isUnique = false;
+            while (!isUnique) {
+                userReferralCode = crypto.randomBytes(4).toString('hex').toUpperCase();
+                const existing = await prisma.user.findFirst({
+                    where: { referralCode: userReferralCode }
+                });
+                if (!existing) isUnique = true;
+            }
+
+            // Pobierz ustawienia (dla czasu trwania bonusu)
+            let bonusExpires = null;
+            if (referrerData) {
+                const settings = await ReferralService.getSettings();
+                if (settings.referralBonusDuration) {
+                    bonusExpires = new Date();
+                    bonusExpires.setDate(bonusExpires.getDate() + settings.referralBonusDuration);
+                }
+            }
+
             const passwordHash = await authService.hashPassword(password);
-            
+
             // Generuj kod weryfikacyjny
             const verificationCode = emailUtils.generateCode();
             const verificationExpires = new Date(Date.now() + 15 * 60 * 1000);
 
-            // Utwórz użytkownika - UWAGA: password_hash i verification_* są bez @map!
+            // Utwórz użytkownika
             const newUser = await prisma.user.create({
                 data: {
                     email: email.toLowerCase(),
                     password_hash: passwordHash,
                     verification_code: verificationCode,
                     verification_expires: verificationExpires,
-                    isVerified: false
+                    isVerified: false,
+                    referralCode: userReferralCode,
+                    referredById: referrerData?.id || null,
+                    referralBonusExpires: bonusExpires
                 }
             });
 
@@ -60,7 +94,8 @@ class AuthController {
             res.status(201).json({
                 message: 'Konto utworzone. Sprawdź email i wpisz kod weryfikacyjny.',
                 requiresVerification: true,
-                email: newUser.email
+                email: newUser.email,
+                referredBy: !!referrerData
             });
 
         } catch (error) {
@@ -127,7 +162,8 @@ class AuthController {
                     id: verifiedUser.id,
                     email: verifiedUser.email,
                     balance: parseFloat(verifiedUser.balance || 0),
-                    isVerified: verifiedUser.isVerified
+                    isVerified: verifiedUser.isVerified,
+                    referralCode: verifiedUser.referralCode
                 },
                 token
             });
@@ -165,9 +201,9 @@ class AuthController {
 
             await prisma.user.update({
                 where: { id: user.id },
-                data: { 
-                    verification_code: verificationCode, 
-                    verification_expires: verificationExpires 
+                data: {
+                    verification_code: verificationCode,
+                    verification_expires: verificationExpires
                 }
             });
 
@@ -202,7 +238,7 @@ class AuthController {
 
             // Sprawdź czy zweryfikowany
             if (!user.isVerified) {
-                return res.status(403).json({ 
+                return res.status(403).json({
                     error: 'Konto nie zostało zweryfikowane. Sprawdź email.',
                     requiresVerification: true,
                     email: user.email
@@ -236,7 +272,8 @@ class AuthController {
                     email: user.email,
                     balance: parseFloat(user.balance || 0),
                     isVerified: user.isVerified,
-                    isAdmin: user.isAdmin
+                    isAdmin: user.isAdmin,
+                    referralCode: user.referralCode
                 },
                 token
             });
@@ -263,7 +300,12 @@ class AuthController {
             if (!req.user) {
                 return res.status(401).json({ error: 'Nie zalogowano' });
             }
-            res.json({ user: req.user });
+            res.json({ 
+                user: {
+                    ...req.user,
+                    referralCode: req.user.referralCode
+                }
+            });
         } catch (error) {
             res.status(500).json({ error: 'Błąd serwera' });
         }

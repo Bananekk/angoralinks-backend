@@ -1,12 +1,12 @@
 // services/earningsService.js
-
 const { PrismaClient } = require('@prisma/client');
 const crypto = require('crypto');
-const linkService = require('./linkService'); // ← UŻYWAMY ISTNIEJĄCEGO SERWISU!
+const linkService = require('./linkService');
+const ReferralService = require('./referralService');
 
 const prisma = new PrismaClient();
 
-// Konfiguracja (zsynchronizowana z platformSettings w bazie)
+// Konfiguracja
 const EARNINGS_CONFIG = {
     UNIQUENESS_WINDOW_HOURS: 24,
     MAX_VISITS_PER_IP_PER_LINK: 1,
@@ -78,15 +78,11 @@ class EarningsService {
         return { allowed: true };
     }
 
-    /**
-     * Oblicz zarobek - UŻYWA linkService który pobiera z bazy danych!
-     */
     async calculateEarning(visitData) {
         const { ip, linkId, country } = visitData;
         const ipHash = this.hashIP(ip);
         const countryCode = (country || 'XX').toUpperCase();
 
-        // 1. Sprawdź limity fraud
         const fraudCheck = await this.checkFraudLimits(ipHash);
         if (!fraudCheck.allowed) {
             return {
@@ -101,24 +97,21 @@ class EarningsService {
             };
         }
 
-        // 2. Sprawdź unikalność
         const isUnique = await this.checkUniqueness(ipHash, linkId);
 
-        // 3. Pobierz stawkę z linkService (który pobiera z BAZY DANYCH!)
         const rate = await linkService.getRateForCountry(countryCode);
         const commission = await linkService.getPlatformCommission();
-        
-        const grossCpm = parseFloat(rate.cpmRate || rate.cpm_rate || 0);
-        const userCpm = grossCpm * (1 - commission);  // np. 0.85 dla użytkownika
-        const platformCpm = grossCpm * commission;     // np. 0.15 dla platformy
 
-        // 4. Oblicz zarobek (tylko dla unikalnych wizyt)
+        const grossCpm = parseFloat(rate.cpmRate || rate.cpm_rate || 0);
+        const userCpm = grossCpm * (1 - commission);
+        const platformCpm = grossCpm * commission;
+
         let earned = 0;
         let platformEarned = 0;
 
         if (isUnique) {
-            earned = userCpm / 1000;           // Zarobek użytkownika za 1 wizytę
-            platformEarned = platformCpm / 1000; // Zarobek platformy za 1 wizytę
+            earned = userCpm / 1000;
+            platformEarned = platformCpm / 1000;
         }
 
         return {
@@ -165,7 +158,7 @@ class EarningsService {
                 data: {
                     linkId,
                     ipHash: earnings.ipHash,
-                    ip_address: earnings.ipHash, // Dla kompatybilności
+                    ip_address: earnings.ipHash,
                     encryptedIp: encryptedIp || null,
                     country: country?.toUpperCase() || 'XX',
                     countryTier: earnings.tier,
@@ -231,13 +224,27 @@ class EarningsService {
                         }
                     });
                 } catch (e) {
-                    // Ignoruj błędy daily_earnings (tabela może nie istnieć)
                     console.log('DailyEarning upsert skipped:', e.message);
                 }
             }
 
             return visit;
         });
+
+        // ============ PROWIZJA REFERALNA ============
+        if (earnings.isUnique && !earnings.blocked && earnings.earned > 0) {
+            try {
+                await ReferralService.processReferralCommission(
+                    link.user.id,
+                    result.id,
+                    earnings.earned
+                );
+            } catch (error) {
+                console.error('Referral commission error:', error);
+                // Nie przerywaj procesu nawet jeśli prowizja się nie naliczy
+            }
+        }
+        // ============================================
 
         return { visit: result, earnings };
     }
