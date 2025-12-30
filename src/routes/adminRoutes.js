@@ -1004,7 +1004,6 @@ router.put('/payouts/:id', async (req, res) => {
 // WIADOMOŚCI KONTAKTOWE
 // ======================
 
-const emailUtils = require('../utils/email');
 
 router.get('/messages', async (req, res) => {
     try {
