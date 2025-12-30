@@ -113,8 +113,12 @@ class ProfileController {
                 where: { id: req.user.id }
             });
 
-            // Sprawdź aktualne hasło
-            const isValid = await authService.verifyPassword(currentPassword, user.passwordHash);
+            if (!user) {
+                return res.status(404).json({ error: 'Użytkownik nie znaleziony' });
+            }
+
+            // Sprawdź aktualne hasło - POPRAWIONE: password_hash zamiast passwordHash
+            const isValid = await authService.verifyPassword(currentPassword, user.password_hash);
             if (!isValid) {
                 return res.status(401).json({ error: 'Aktualne hasło jest nieprawidłowe' });
             }
@@ -122,10 +126,10 @@ class ProfileController {
             // Hashuj nowe hasło
             const newPasswordHash = await authService.hashPassword(newPassword);
 
-            // Zaktualizuj hasło
+            // Zaktualizuj hasło - POPRAWIONE: password_hash zamiast passwordHash
             await prisma.user.update({
                 where: { id: req.user.id },
-                data: { passwordHash: newPasswordHash }
+                data: { password_hash: newPasswordHash }
             });
 
             res.json({ message: 'Hasło zostało zmienione' });
@@ -150,8 +154,12 @@ class ProfileController {
                 where: { id: req.user.id }
             });
 
-            // Sprawdź hasło
-            const isValid = await authService.verifyPassword(password, user.passwordHash);
+            if (!user) {
+                return res.status(404).json({ error: 'Użytkownik nie znaleziony' });
+            }
+
+            // Sprawdź hasło - POPRAWIONE: password_hash zamiast passwordHash
+            const isValid = await authService.verifyPassword(password, user.password_hash);
             if (!isValid) {
                 return res.status(401).json({ error: 'Nieprawidłowe hasło' });
             }
