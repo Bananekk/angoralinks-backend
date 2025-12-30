@@ -237,7 +237,7 @@ class EarningsService {
                 await ReferralService.processReferralCommission(
                     link.user.id,
                     result.id,
-                    earnings.earned
+                    earnings.earned,
                     earnings.platformEarned
                 );
             } catch (error) {
