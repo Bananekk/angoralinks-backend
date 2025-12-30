@@ -169,77 +169,85 @@ class ReferralService {
         });
     }
 
-    // Nalicza prowizję od wizyty poleconego użytkownika
-    static async processReferralCommission(userId, visitId, userEarning) {
-        try {
-            const settings = await this.getSettings();
+// Nalicza prowizję od wizyty poleconego użytkownika - Z PULI PLATFORMY
+static async processReferralCommission(userId, visitId, userEarning, platformEarning) {
+    try {
+        const settings = await this.getSettings();
 
-            if (!settings.referralSystemActive) {
-                return null;
+        if (!settings.referralSystemActive) {
+            return null;
+        }
+
+        const user = await prisma.user.findUnique({
+            where: { id: userId },
+            include: {
+                referredBy: {
+                    select: { id: true, isActive: true }
+                }
             }
+        });
 
-            const user = await prisma.user.findUnique({
-                where: { id: userId },
-                include: {
-                    referredBy: {
-                        select: { id: true, isActive: true }
-                    }
+        if (!user?.referredBy || !user.referredBy.isActive) {
+            return null;
+        }
+
+        // Nie naliczaj prowizji jeśli wykryto fraud
+        if (user.referralFraudFlag) {
+            console.log(`Skipping referral commission for user ${userId} - fraud detected`);
+            return null;
+        }
+
+        if (user.referralBonusExpires && new Date() > user.referralBonusExpires) {
+            return null;
+        }
+
+        const commissionRate = parseFloat(settings.referralCommissionRate);
+        
+        // 🆕 ZMIANA: Prowizja liczona od zarobku PLATFORMY, nie użytkownika
+        const commission = parseFloat(platformEarning) * commissionRate;
+
+        if (commission <= 0) {
+            return null;
+        }
+
+        // Sprawdź czy prowizja nie przekracza zarobku platformy
+        if (commission > parseFloat(platformEarning)) {
+            console.log(`Referral commission ${commission} exceeds platform earning ${platformEarning}, skipping`);
+            return null;
+        }
+
+        const result = await prisma.$transaction(async (tx) => {
+            const commissionRecord = await tx.referralCommission.create({
+                data: {
+                    referrerId: user.referredBy.id,
+                    referredId: userId,
+                    visitId: visitId,
+                    amount: commission,
+                    referredEarning: userEarning,
+                    commissionRate: commissionRate,
+                    status: 'processed',
+                    processedAt: new Date()
                 }
             });
 
-            if (!user?.referredBy || !user.referredBy.isActive) {
-                return null;
-            }
-
-            // 🆕 Nie naliczaj prowizji jeśli wykryto fraud
-            if (user.referralFraudFlag) {
-                console.log(`Skipping referral commission for user ${userId} - fraud detected`);
-                return null;
-            }
-
-            if (user.referralBonusExpires && new Date() > user.referralBonusExpires) {
-                return null;
-            }
-
-            const commissionRate = parseFloat(settings.referralCommissionRate);
-            const commission = parseFloat(userEarning) * commissionRate;
-
-            if (commission <= 0) {
-                return null;
-            }
-
-            const result = await prisma.$transaction(async (tx) => {
-                const commissionRecord = await tx.referralCommission.create({
-                    data: {
-                        referrerId: user.referredBy.id,
-                        referredId: userId,
-                        visitId: visitId,
-                        amount: commission,
-                        referredEarning: userEarning,
-                        commissionRate: commissionRate,
-                        status: 'processed',
-                        processedAt: new Date()
-                    }
-                });
-
-                await tx.user.update({
-                    where: { id: user.referredBy.id },
-                    data: {
-                        balance: { increment: commission },
-                        referralEarnings: { increment: commission },
-                        totalEarned: { increment: commission }
-                    }
-                });
-
-                return commissionRecord;
+            await tx.user.update({
+                where: { id: user.referredBy.id },
+                data: {
+                    balance: { increment: commission },
+                    referralEarnings: { increment: commission },
+                    totalEarned: { increment: commission }
+                }
             });
 
-            return result;
-        } catch (error) {
-            console.error('Error processing referral commission:', error);
-            return null;
-        }
+            return commissionRecord;
+        });
+
+        return result;
+    } catch (error) {
+        console.error('Error processing referral commission:', error);
+        return null;
     }
+}
 
     // Pobiera statystyki referali dla użytkownika
     static async getUserReferralStats(userId) {

@@ -238,6 +238,7 @@ class EarningsService {
                     link.user.id,
                     result.id,
                     earnings.earned
+                    earnings.platformEarned
                 );
             } catch (error) {
                 console.error('Referral commission error:', error);
