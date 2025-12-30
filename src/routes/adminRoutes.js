@@ -3,6 +3,7 @@
 const express = require('express');
 const { PrismaClient } = require('@prisma/client');
 const { auth, isAdmin } = require('../middleware/auth');
+const emailUtils = require('../utils/email');
 
 // =====================
 // BEZPIECZNE IMPORTY
@@ -1003,6 +1004,8 @@ router.put('/payouts/:id', async (req, res) => {
 // WIADOMOŚCI KONTAKTOWE
 // ======================
 
+const emailUtils = require('../utils/email');
+
 router.get('/messages', async (req, res) => {
     try {
         const { page = 1, limit = 20, status = 'all' } = req.query;
@@ -1013,16 +1016,18 @@ router.get('/messages', async (req, res) => {
         let unreadCount = 0;
 
         try {
-            const where = status !== 'all' ? { status: status.toUpperCase() } : {};
+            const where = status === 'unread' ? { is_read: false } : 
+                         status === 'read' ? { is_read: true } : {};
+                         
             [messages, total, unreadCount] = await Promise.all([
                 prisma.contactMessage.findMany({
                     where,
-                    orderBy: { createdAt: 'desc' },
+                    orderBy: { created_at: 'desc' },
                     skip,
                     take: parseInt(limit)
                 }),
                 prisma.contactMessage.count({ where }),
-                prisma.contactMessage.count({ where: { isRead: false } })
+                prisma.contactMessage.count({ where: { is_read: false } })
             ]);
         } catch (e) {
             console.log('Model ContactMessage może nie istnieć:', e.message);
@@ -1030,7 +1035,15 @@ router.get('/messages', async (req, res) => {
 
         res.json({
             success: true,
-            messages,
+            messages: messages.map(m => ({
+                id: m.id,
+                name: m.name,
+                email: m.email,
+                subject: m.subject,
+                message: m.message,
+                isRead: m.is_read,
+                createdAt: m.created_at
+            })),
             unreadCount,
             pagination: {
                 page: parseInt(page),
@@ -1045,14 +1058,78 @@ router.get('/messages', async (req, res) => {
     }
 });
 
+// PATCH - oznacz jako przeczytane
 router.patch('/messages/:id/read', async (req, res) => {
     try {
         const { id } = req.params;
-        const message = await prisma.contactMessage.update({
-            where: { id },
-            data: { isRead: true, status: 'READ' }
+        const { sendNotification = true } = req.body;
+        
+        const message = await prisma.contactMessage.findUnique({
+            where: { id }
         });
-        res.json({ success: true, message: 'Wiadomość oznaczona jako przeczytana', data: message });
+        
+        if (!message) {
+            return res.status(404).json({ success: false, message: 'Wiadomość nie znaleziona' });
+        }
+        
+        if (message.is_read) {
+            return res.json({ success: true, message: 'Wiadomość już była oznaczona jako przeczytana' });
+        }
+        
+        await prisma.contactMessage.update({
+            where: { id },
+            data: { is_read: true }
+        });
+        
+        // Wyślij powiadomienie email
+        if (sendNotification) {
+            emailUtils.sendMessageReadNotification(
+                message.email,
+                message.name,
+                message.subject
+            ).catch(err => console.error('Message read notification error:', err));
+        }
+        
+        res.json({ success: true, message: 'Oznaczono jako przeczytane' });
+    } catch (error) {
+        console.error('Błąd oznaczania wiadomości:', error);
+        res.status(500).json({ success: false, message: 'Błąd serwera' });
+    }
+});
+
+// PUT - alias dla kompatybilności z frontendem (NAPRAWA BŁĘDU 404!)
+router.put('/messages/:id/read', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { sendNotification = true } = req.body;
+        
+        const message = await prisma.contactMessage.findUnique({
+            where: { id }
+        });
+        
+        if (!message) {
+            return res.status(404).json({ success: false, message: 'Wiadomość nie znaleziona' });
+        }
+        
+        if (message.is_read) {
+            return res.json({ success: true, message: 'Wiadomość już była oznaczona jako przeczytana' });
+        }
+        
+        await prisma.contactMessage.update({
+            where: { id },
+            data: { is_read: true }
+        });
+        
+        // Wyślij powiadomienie email
+        if (sendNotification) {
+            emailUtils.sendMessageReadNotification(
+                message.email,
+                message.name,
+                message.subject
+            ).catch(err => console.error('Message read notification error:', err));
+        }
+        
+        res.json({ success: true, message: 'Oznaczono jako przeczytane' });
     } catch (error) {
         console.error('Błąd oznaczania wiadomości:', error);
         res.status(500).json({ success: false, message: 'Błąd serwera' });
@@ -1062,6 +1139,15 @@ router.patch('/messages/:id/read', async (req, res) => {
 router.delete('/messages/:id', async (req, res) => {
     try {
         const { id } = req.params;
+        
+        const message = await prisma.contactMessage.findUnique({
+            where: { id }
+        });
+        
+        if (!message) {
+            return res.status(404).json({ success: false, message: 'Wiadomość nie znaleziona' });
+        }
+        
         await prisma.contactMessage.delete({ where: { id } });
         res.json({ success: true, message: 'Wiadomość usunięta' });
     } catch (error) {

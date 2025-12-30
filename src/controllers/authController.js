@@ -1,5 +1,5 @@
 const authService = require('../services/authService');
-const emailService = require('../services/emailService');
+const emailUtils = require('../utils/email');
 const { PrismaClient } = require('@prisma/client');
 
 const prisma = new PrismaClient();
@@ -34,25 +34,25 @@ class AuthController {
             const passwordHash = await authService.hashPassword(password);
             
             // Generuj kod weryfikacyjny
-            const verificationCode = emailService.generateCode();
-            const verificationExpires = new Date(Date.now() + 15 * 60 * 1000); // 15 minut
+            const verificationCode = emailUtils.generateCode();
+            const verificationExpires = new Date(Date.now() + 15 * 60 * 1000);
 
-            // Utwórz użytkownika (niezweryfikowany)
+            // Utwórz użytkownika
             const newUser = await prisma.user.create({
                 data: {
                     email: email.toLowerCase(),
-                    passwordHash,
-                    verificationCode,
-                    verificationExpires,
-                    isVerified: false
+                    password_hash: passwordHash,
+                    verification_code: verificationCode,
+                    verification_expires: verificationExpires,
+                    is_verified: false
                 }
             });
 
-            // Wyślij email z kodem
-            const emailSent = await emailService.sendVerificationCode(email, verificationCode);
-
-            if (!emailSent && process.env.EMAIL_HOST) {
-                // Usuń użytkownika jeśli email się nie wysłał
+            // Wyślij email
+            try {
+                await emailUtils.sendVerificationEmail(email, verificationCode);
+            } catch (emailError) {
+                console.error('Błąd wysyłki email:', emailError);
                 await prisma.user.delete({ where: { id: newUser.id } });
                 return res.status(500).json({ error: 'Błąd wysyłania email weryfikacyjnego' });
             }
@@ -86,19 +86,19 @@ class AuthController {
                 return res.status(404).json({ error: 'Użytkownik nie znaleziony' });
             }
 
-            if (user.isVerified) {
+            if (user.is_verified) {
                 return res.status(400).json({ error: 'Konto już zweryfikowane' });
             }
 
-            if (!user.verificationCode || !user.verificationExpires) {
+            if (!user.verification_code || !user.verification_expires) {
                 return res.status(400).json({ error: 'Brak kodu weryfikacyjnego' });
             }
 
-            if (new Date() > user.verificationExpires) {
+            if (new Date() > user.verification_expires) {
                 return res.status(400).json({ error: 'Kod wygasł. Poproś o nowy kod.' });
             }
 
-            if (user.verificationCode !== code) {
+            if (user.verification_code !== code) {
                 return res.status(400).json({ error: 'Nieprawidłowy kod' });
             }
 
@@ -106,14 +106,16 @@ class AuthController {
             const verifiedUser = await prisma.user.update({
                 where: { id: user.id },
                 data: {
-                    isVerified: true,
-                    verificationCode: null,
-                    verificationExpires: null
+                    is_verified: true,
+                    verification_code: null,
+                    verification_expires: null
                 }
             });
 
-            // Wyślij welcome email
-            await emailService.sendWelcomeEmail(verifiedUser.email);
+            // Wyślij welcome email (nie blokujemy jeśli się nie uda)
+            emailUtils.sendWelcomeEmail(verifiedUser.email).catch(err => {
+                console.error('Welcome email error:', err);
+            });
 
             // Generuj token
             const token = authService.generateToken(verifiedUser.id);
@@ -123,8 +125,8 @@ class AuthController {
                 user: {
                     id: verifiedUser.id,
                     email: verifiedUser.email,
-                    balance: parseFloat(verifiedUser.balance),
-                    isVerified: verifiedUser.isVerified
+                    balance: parseFloat(verifiedUser.balance || 0),
+                    isVerified: verifiedUser.is_verified
                 },
                 token
             });
@@ -152,23 +154,26 @@ class AuthController {
                 return res.status(404).json({ error: 'Użytkownik nie znaleziony' });
             }
 
-            if (user.isVerified) {
+            if (user.is_verified) {
                 return res.status(400).json({ error: 'Konto już zweryfikowane' });
             }
 
             // Generuj nowy kod
-            const verificationCode = emailService.generateCode();
+            const verificationCode = emailUtils.generateCode();
             const verificationExpires = new Date(Date.now() + 15 * 60 * 1000);
 
             await prisma.user.update({
                 where: { id: user.id },
-                data: { verificationCode, verificationExpires }
+                data: { 
+                    verification_code: verificationCode, 
+                    verification_expires: verificationExpires 
+                }
             });
 
             // Wyślij email
-            const emailSent = await emailService.sendVerificationCode(email, verificationCode);
-
-            if (!emailSent) {
+            try {
+                await emailUtils.sendVerificationEmail(email, verificationCode);
+            } catch (emailError) {
                 return res.status(500).json({ error: 'Błąd wysyłania email' });
             }
 
@@ -195,7 +200,7 @@ class AuthController {
             }
 
             // Sprawdź czy zweryfikowany
-            if (!user.isVerified) {
+            if (!user.is_verified) {
                 return res.status(403).json({ 
                     error: 'Konto nie zostało zweryfikowane. Sprawdź email.',
                     requiresVerification: true,
@@ -203,10 +208,16 @@ class AuthController {
                 });
             }
 
-            const isValidPassword = await authService.verifyPassword(password, user.passwordHash);
+            const isValidPassword = await authService.verifyPassword(password, user.password_hash);
             if (!isValidPassword) {
                 return res.status(401).json({ error: 'Nieprawidłowy email lub hasło' });
             }
+
+            // Aktualizuj ostatnie logowanie
+            await prisma.user.update({
+                where: { id: user.id },
+                data: { last_login_at: new Date() }
+            });
 
             const token = authService.generateToken(user.id);
 
@@ -222,9 +233,9 @@ class AuthController {
                 user: {
                     id: user.id,
                     email: user.email,
-                    balance: parseFloat(user.balance),
-                    isVerified: user.isVerified,
-                    isAdmin: user.isAdmin
+                    balance: parseFloat(user.balance || 0),
+                    isVerified: user.is_verified,
+                    isAdmin: user.is_admin
                 },
                 token
             });

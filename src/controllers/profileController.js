@@ -1,5 +1,6 @@
 const { PrismaClient } = require('@prisma/client');
 const authService = require('../services/authService');
+const emailUtils = require('../utils/email');
 
 const prisma = new PrismaClient();
 
@@ -13,9 +14,9 @@ class ProfileController {
                     id: true,
                     email: true,
                     balance: true,
-                    totalEarned: true,
-                    isVerified: true,
-                    createdAt: true,
+                    total_earned: true,
+                    is_verified: true,
+                    created_at: true,
                     _count: {
                         select: { links: true }
                     }
@@ -30,11 +31,11 @@ class ProfileController {
                 user: {
                     id: user.id,
                     email: user.email,
-                    balance: parseFloat(user.balance),
-                    totalEarned: parseFloat(user.totalEarned),
-                    isVerified: user.isVerified,
+                    balance: parseFloat(user.balance || 0),
+                    totalEarned: parseFloat(user.total_earned || 0),
+                    isVerified: user.is_verified,
                     linksCount: user._count.links,
-                    createdAt: user.createdAt
+                    createdAt: user.created_at
                 }
             });
 
@@ -117,7 +118,7 @@ class ProfileController {
                 return res.status(404).json({ error: 'Użytkownik nie znaleziony' });
             }
 
-            // Sprawdź aktualne hasło - POPRAWIONE: password_hash zamiast passwordHash
+            // Sprawdź aktualne hasło
             const isValid = await authService.verifyPassword(currentPassword, user.password_hash);
             if (!isValid) {
                 return res.status(401).json({ error: 'Aktualne hasło jest nieprawidłowe' });
@@ -126,7 +127,7 @@ class ProfileController {
             // Hashuj nowe hasło
             const newPasswordHash = await authService.hashPassword(newPassword);
 
-            // Zaktualizuj hasło - POPRAWIONE: password_hash zamiast passwordHash
+            // Zaktualizuj hasło
             await prisma.user.update({
                 where: { id: req.user.id },
                 data: { password_hash: newPasswordHash }
@@ -158,15 +159,23 @@ class ProfileController {
                 return res.status(404).json({ error: 'Użytkownik nie znaleziony' });
             }
 
-            // Sprawdź hasło - POPRAWIONE: password_hash zamiast passwordHash
+            // Sprawdź hasło
             const isValid = await authService.verifyPassword(password, user.password_hash);
             if (!isValid) {
                 return res.status(401).json({ error: 'Nieprawidłowe hasło' });
             }
 
+            // Zapisz email przed usunięciem
+            const userEmail = user.email;
+
             // Usuń użytkownika (kaskadowo usunie też linki i wizyty)
             await prisma.user.delete({
                 where: { id: req.user.id }
+            });
+
+            // Wyślij email potwierdzający usunięcie (nie blokujemy odpowiedzi)
+            emailUtils.sendAccountDeletedEmail(userEmail).catch(err => {
+                console.error('Account deleted email error:', err);
             });
 
             res.json({ message: 'Konto zostało usunięte' });

@@ -1,5 +1,5 @@
 const { PrismaClient } = require('@prisma/client');
-const emailService = require('../services/emailService');
+const emailUtils = require('../utils/email');
 
 const prisma = new PrismaClient();
 
@@ -38,12 +38,12 @@ class ContactController {
                 }
             });
 
-            // Wyślij email potwierdzający do użytkownika
-            await emailService.sendContactConfirmation(
+            // Wyślij email potwierdzający do użytkownika (nie blokujemy odpowiedzi)
+            emailUtils.sendContactConfirmation(
                 email.trim().toLowerCase(),
                 name.trim(),
                 subject.trim()
-            );
+            ).catch(err => console.error('Contact confirmation email error:', err));
 
             res.status(201).json({
                 message: 'Wiadomość została wysłana',
@@ -60,12 +60,12 @@ class ContactController {
     async list(req, res) {
         try {
             const messages = await prisma.contactMessage.findMany({
-                orderBy: { createdAt: 'desc' }
+                orderBy: { created_at: 'desc' }
             });
 
             // Policz nieprzeczytane
             const unreadCount = await prisma.contactMessage.count({
-                where: { isRead: false }
+                where: { is_read: false }
             });
 
             res.json({
@@ -75,8 +75,8 @@ class ContactController {
                     email: m.email,
                     subject: m.subject,
                     message: m.message,
-                    isRead: m.isRead,
-                    createdAt: m.createdAt
+                    isRead: m.is_read,
+                    createdAt: m.created_at
                 })),
                 unreadCount
             });
@@ -91,7 +91,7 @@ class ContactController {
     async markAsRead(req, res) {
         try {
             const { id } = req.params;
-            const { sendNotification } = req.body; // Opcjonalnie: czy wysłać powiadomienie
+            const { sendNotification = true } = req.body;
 
             const message = await prisma.contactMessage.findUnique({
                 where: { id }
@@ -102,22 +102,22 @@ class ContactController {
             }
 
             // Jeśli już przeczytana, nie wysyłaj ponownie
-            if (message.isRead) {
+            if (message.is_read) {
                 return res.json({ message: 'Wiadomość już była oznaczona jako przeczytana' });
             }
 
             await prisma.contactMessage.update({
                 where: { id },
-                data: { isRead: true }
+                data: { is_read: true }
             });
 
-            // Wyślij powiadomienie email do użytkownika (domyślnie tak)
-            if (sendNotification !== false) {
-                await emailService.sendMessageReadNotification(
+            // Wyślij powiadomienie email do użytkownika
+            if (sendNotification) {
+                emailUtils.sendMessageReadNotification(
                     message.email,
                     message.name,
                     message.subject
-                );
+                ).catch(err => console.error('Message read notification error:', err));
             }
 
             res.json({ message: 'Oznaczono jako przeczytane' });
