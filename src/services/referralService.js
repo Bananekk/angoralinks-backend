@@ -10,7 +10,7 @@ class ReferralService {
         return crypto.randomBytes(4).toString('hex').toUpperCase();
     }
 
-    // 🆕 Hashuje IP (taki sam algorytm jak w earningsService)
+    // Hashuje IP (taki sam algorytm jak w earningsService)
     static hashIP(ip) {
         const salt = process.env.IP_HASH_SALT || 'angoralinks-2024';
         return crypto
@@ -18,6 +18,53 @@ class ReferralService {
             .update(ip + salt)
             .digest('hex')
             .substring(0, 32);
+    }
+
+    // Generuje kod dla użytkownika (na żądanie)
+    static async generateCodeForUser(userId) {
+        const user = await prisma.user.findUnique({
+            where: { id: userId },
+            select: { referralCode: true }
+        });
+
+        // Jeśli już ma kod, zwróć go
+        if (user?.referralCode) {
+            return { 
+                success: true, 
+                code: user.referralCode,
+                alreadyExists: true 
+            };
+        }
+
+        // Generuj unikalny kod
+        let code;
+        let isUnique = false;
+        let attempts = 0;
+
+        while (!isUnique && attempts < 10) {
+            code = crypto.randomBytes(4).toString('hex').toUpperCase();
+            const existing = await prisma.user.findFirst({
+                where: { referralCode: code }
+            });
+            if (!existing) isUnique = true;
+            attempts++;
+        }
+
+        if (!isUnique) {
+            return { success: false, error: 'Nie udało się wygenerować unikalnego kodu' };
+        }
+
+        // Zapisz kod
+        await prisma.user.update({
+            where: { id: userId },
+            data: { referralCode: code }
+        });
+
+        return { 
+            success: true, 
+            code: code,
+            alreadyExists: false 
+        };
     }
 
     // Pobiera ustawienia systemu referali
@@ -30,7 +77,7 @@ class ReferralService {
             settings = await prisma.systemSettings.create({
                 data: {
                     id: 'settings',
-                    referralCommissionRate: 0.10,
+                    referralCommissionRate: 0.05,
                     referralBonusDuration: null,
                     minReferralPayout: 5.00,
                     referralSystemActive: true
@@ -63,7 +110,7 @@ class ReferralService {
         return referrer || null;
     }
 
-    // 🆕 Sprawdza czy IP poleconego matchuje z IP polecającego
+    // Sprawdza czy IP poleconego matchuje z IP polecającego
     static async checkFraudulentReferral(referrerId, registrationIpHash) {
         const referrer = await prisma.user.findUnique({
             where: { id: referrerId },
@@ -76,24 +123,18 @@ class ReferralService {
 
         if (!referrer) return { isFraud: false };
 
-        // Sprawdź czy IP rejestracji poleconego = IP rejestracji polecającego
-        // Lub IP rejestracji poleconego = IP z którego polecający wygenerował kod
         const referrerIpHashes = [];
         
         if (referrer.referralIpHash) {
             referrerIpHashes.push(referrer.referralIpHash);
         }
         
-        // Jeśli mamy zaszyfrowane IP rejestracji, hashujemy je do porównania
-        // (zakładamy że registrationIp może być już zahashowane lub zaszyfrowane)
         if (referrer.registrationIp) {
-            // Jeśli to jest już hash (32 znaki hex), użyj go bezpośrednio
             if (referrer.registrationIp.length === 32 && /^[a-f0-9]+$/i.test(referrer.registrationIp)) {
                 referrerIpHashes.push(referrer.registrationIp);
             }
         }
 
-        // Sprawdź dopasowanie
         const isFraud = referrerIpHashes.includes(registrationIpHash);
 
         return {
@@ -103,7 +144,7 @@ class ReferralService {
         };
     }
 
-    // 🆕 Zaktualizowana funkcja przypisania referera z wykrywaniem fraudu
+    // Przypisanie referera z wykrywaniem fraudu
     static async assignReferrer(userId, referralCode, registrationIp) {
         const settings = await this.getSettings();
 
@@ -126,7 +167,6 @@ class ReferralService {
             bonusExpires.setDate(bonusExpires.getDate() + settings.referralBonusDuration);
         }
 
-        // 🆕 Hashuj IP rejestracji i sprawdź fraud
         const registrationIpHash = registrationIp ? this.hashIP(registrationIp) : null;
         let fraudData = { isFraud: false, reason: null };
 
@@ -155,7 +195,7 @@ class ReferralService {
         };
     }
 
-    // 🆕 Aktualizuje IP hash polecającego (wywoływane przy logowaniu)
+    // Aktualizuje IP hash polecającego (wywoływane przy logowaniu)
     static async updateReferrerIpHash(userId, ip) {
         if (!ip) return;
 
@@ -169,85 +209,85 @@ class ReferralService {
         });
     }
 
-// Nalicza prowizję od wizyty poleconego użytkownika - Z PULI PLATFORMY
-static async processReferralCommission(userId, visitId, userEarning, platformEarning) {
-    try {
-        const settings = await this.getSettings();
+    // Nalicza prowizję od wizyty poleconego użytkownika - Z PULI PLATFORMY
+    static async processReferralCommission(userId, visitId, userEarning, platformEarning) {
+        try {
+            const settings = await this.getSettings();
 
-        if (!settings.referralSystemActive) {
-            return null;
-        }
-
-        const user = await prisma.user.findUnique({
-            where: { id: userId },
-            include: {
-                referredBy: {
-                    select: { id: true, isActive: true }
-                }
+            if (!settings.referralSystemActive) {
+                return null;
             }
-        });
 
-        if (!user?.referredBy || !user.referredBy.isActive) {
-            return null;
-        }
-
-        // Nie naliczaj prowizji jeśli wykryto fraud
-        if (user.referralFraudFlag) {
-            console.log(`Skipping referral commission for user ${userId} - fraud detected`);
-            return null;
-        }
-
-        if (user.referralBonusExpires && new Date() > user.referralBonusExpires) {
-            return null;
-        }
-
-        const commissionRate = parseFloat(settings.referralCommissionRate);
-        
-        // 🆕 ZMIANA: Prowizja liczona od zarobku PLATFORMY, nie użytkownika
-        const commission = parseFloat(platformEarning) * commissionRate;
-
-        if (commission <= 0) {
-            return null;
-        }
-
-        // Sprawdź czy prowizja nie przekracza zarobku platformy
-        if (commission > parseFloat(platformEarning)) {
-            console.log(`Referral commission ${commission} exceeds platform earning ${platformEarning}, skipping`);
-            return null;
-        }
-
-        const result = await prisma.$transaction(async (tx) => {
-            const commissionRecord = await tx.referralCommission.create({
-                data: {
-                    referrerId: user.referredBy.id,
-                    referredId: userId,
-                    visitId: visitId,
-                    amount: commission,
-                    referredEarning: userEarning,
-                    commissionRate: commissionRate,
-                    status: 'processed',
-                    processedAt: new Date()
+            const user = await prisma.user.findUnique({
+                where: { id: userId },
+                include: {
+                    referredBy: {
+                        select: { id: true, isActive: true }
+                    }
                 }
             });
 
-            await tx.user.update({
-                where: { id: user.referredBy.id },
-                data: {
-                    balance: { increment: commission },
-                    referralEarnings: { increment: commission },
-                    totalEarned: { increment: commission }
-                }
+            if (!user?.referredBy || !user.referredBy.isActive) {
+                return null;
+            }
+
+            // Nie naliczaj prowizji jeśli wykryto fraud
+            if (user.referralFraudFlag) {
+                console.log(`Skipping referral commission for user ${userId} - fraud detected`);
+                return null;
+            }
+
+            if (user.referralBonusExpires && new Date() > user.referralBonusExpires) {
+                return null;
+            }
+
+            const commissionRate = parseFloat(settings.referralCommissionRate);
+            
+            // Prowizja liczona od zarobku PLATFORMY
+            const commission = parseFloat(platformEarning) * commissionRate;
+
+            if (commission <= 0) {
+                return null;
+            }
+
+            // Sprawdź czy prowizja nie przekracza zarobku platformy
+            if (commission > parseFloat(platformEarning)) {
+                console.log(`Referral commission ${commission} exceeds platform earning ${platformEarning}, skipping`);
+                return null;
+            }
+
+            const result = await prisma.$transaction(async (tx) => {
+                const commissionRecord = await tx.referralCommission.create({
+                    data: {
+                        referrerId: user.referredBy.id,
+                        referredId: userId,
+                        visitId: visitId,
+                        amount: commission,
+                        referredEarning: userEarning,
+                        commissionRate: commissionRate,
+                        status: 'processed',
+                        processedAt: new Date()
+                    }
+                });
+
+                await tx.user.update({
+                    where: { id: user.referredBy.id },
+                    data: {
+                        balance: { increment: commission },
+                        referralEarnings: { increment: commission },
+                        totalEarned: { increment: commission }
+                    }
+                });
+
+                return commissionRecord;
             });
 
-            return commissionRecord;
-        });
-
-        return result;
-    } catch (error) {
-        console.error('Error processing referral commission:', error);
-        return null;
+            return result;
+        } catch (error) {
+            console.error('Error processing referral commission:', error);
+            return null;
+        }
     }
-}
 
     // Pobiera statystyki referali dla użytkownika
     static async getUserReferralStats(userId) {
@@ -261,6 +301,25 @@ static async processReferralCommission(userId, visitId, userEarning, platformEar
                 }
             }
         });
+
+        // Jeśli użytkownik nie ma kodu, zwróć podstawowe dane
+        if (!user?.referralCode) {
+            return {
+                referralCode: null,
+                referralLink: null,
+                referredBy: user?.referredBy ? {
+                    email: this.maskEmail(user.referredBy.email)
+                } : null,
+                stats: {
+                    totalReferrals: 0,
+                    activeReferrals: 0,
+                    totalEarnings: 0,
+                    last30DaysEarnings: 0,
+                    totalCommissions: 0
+                },
+                referrals: []
+            };
+        }
 
         const referralsCount = await prisma.user.count({
             where: { referredById: userId }
@@ -377,7 +436,7 @@ static async processReferralCommission(userId, visitId, userEarning, platformEar
 
     // ============ ADMIN METHODS ============
 
-    // 🆕 Pobiera podejrzane polecenia (fraud alerts)
+    // Pobiera podejrzane polecenia (fraud alerts)
     static async getFraudAlerts() {
         const fraudulentReferrals = await prisma.user.findMany({
             where: {
@@ -403,7 +462,6 @@ static async processReferralCommission(userId, visitId, userEarning, platformEar
             orderBy: { createdAt: 'desc' }
         });
 
-        // Oblicz ile prowizji wygenerowały te podejrzane konta
         const alertsWithCommissions = await Promise.all(
             fraudulentReferrals.map(async (user) => {
                 const commissions = await prisma.referralCommission.aggregate({
@@ -421,10 +479,9 @@ static async processReferralCommission(userId, visitId, userEarning, platformEar
         return alertsWithCommissions;
     }
 
-    // 🆕 Oznacz referral jako sprawdzony (usuń flagę fraud lub zostaw)
+    // Oznacz referral jako sprawdzony
     static async resolveFraudAlert(userId, action) {
         if (action === 'dismiss') {
-            // Usuń flagę fraud - uznaj za prawidłowe
             await prisma.user.update({
                 where: { id: userId },
                 data: {
@@ -434,7 +491,6 @@ static async processReferralCommission(userId, visitId, userEarning, platformEar
             });
             return { success: true, message: 'Alert odrzucony' };
         } else if (action === 'block') {
-            // Zablokuj użytkownika
             await prisma.user.update({
                 where: { id: userId },
                 data: {
@@ -444,7 +500,6 @@ static async processReferralCommission(userId, visitId, userEarning, platformEar
             });
             return { success: true, message: 'Użytkownik zablokowany' };
         } else if (action === 'block_both') {
-            // Zablokuj zarówno poleconego jak i polecającego
             const user = await prisma.user.findUnique({
                 where: { id: userId },
                 select: { referredById: true }
@@ -495,7 +550,6 @@ static async processReferralCommission(userId, visitId, userEarning, platformEar
                     referrals: { some: {} }
                 }
             }),
-            // 🆕 Liczba alertów fraud
             prisma.user.count({
                 where: {
                     referralFraudFlag: true,
@@ -541,7 +595,7 @@ static async processReferralCommission(userId, visitId, userEarning, platformEar
                 totalCommissions,
                 totalCommissionsAmount: parseFloat(commissionsSum._sum.amount || 0),
                 activeReferrers,
-                fraudAlerts // 🆕
+                fraudAlerts
             },
             topReferrers: topReferrers.map(u => ({
                 id: u.id,
@@ -554,7 +608,7 @@ static async processReferralCommission(userId, visitId, userEarning, platformEar
                 id: u.id,
                 email: this.maskEmail(u.email),
                 joinedAt: u.createdAt,
-                fraudFlag: u.referralFraudFlag, // 🆕
+                fraudFlag: u.referralFraudFlag,
                 referredBy: {
                     email: u.referredBy.email,
                     code: u.referredBy.referralCode
@@ -640,8 +694,8 @@ static async processReferralCommission(userId, visitId, userEarning, platformEar
                     totalEarned: parseFloat(user.totalEarned || 0),
                     bonusExpires: user.referralBonusExpires,
                     isActive: user.isActive,
-                    fraudFlag: user.referralFraudFlag, // 🆕
-                    fraudReason: user.referralFraudReason, // 🆕
+                    fraudFlag: user.referralFraudFlag,
+                    fraudReason: user.referralFraudReason,
                     referredBy: {
                         id: user.referredBy.id,
                         email: user.referredBy.email,

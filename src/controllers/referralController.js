@@ -33,6 +33,27 @@ class ReferralController {
         }
     }
 
+    // POST /api/referrals/generate-code
+    async generateCode(req, res) {
+        try {
+            const result = await ReferralService.generateCodeForUser(req.user.id);
+
+            if (!result.success) {
+                return res.status(500).json({ error: result.error });
+            }
+
+            res.json({
+                success: true,
+                referralCode: result.code,
+                referralLink: `https://angoralinks.pl/ref/${result.code}`,
+                alreadyExists: result.alreadyExists
+            });
+        } catch (error) {
+            console.error('Error generating referral code:', error);
+            res.status(500).json({ error: 'Błąd generowania kodu' });
+        }
+    }
+
     // GET /api/referrals/validate/:code
     async validateCode(req, res) {
         try {
@@ -122,7 +143,7 @@ class ReferralController {
         }
     }
 
-    // 🆕 GET /api/referrals/admin/fraud-alerts
+    // GET /api/referrals/admin/fraud-alerts
     async getFraudAlerts(req, res) {
         try {
             const alerts = await ReferralService.getFraudAlerts();
@@ -133,11 +154,11 @@ class ReferralController {
         }
     }
 
-    // 🆕 POST /api/referrals/admin/fraud-alerts/:userId/resolve
+    // POST /api/referrals/admin/fraud-alerts/:userId/resolve
     async resolveFraudAlert(req, res) {
         try {
             const { userId } = req.params;
-            const { action } = req.body; // 'dismiss' | 'block' | 'block_both'
+            const { action } = req.body;
 
             if (!['dismiss', 'block', 'block_both'].includes(action)) {
                 return res.status(400).json({ error: 'Nieprawidłowa akcja' });
