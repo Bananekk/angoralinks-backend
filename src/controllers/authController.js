@@ -17,118 +17,150 @@ const getClientIp = (req) => {
 };
 
 class AuthController {
-    // POST /api/auth/register
-    async register(req, res) {
-        try {
-            const { email, password, confirmPassword, referralCode } = req.body;
+    /// POST /api/auth/register
+async register(req, res) {
+    try {
+        const { email, password, confirmPassword, referralCode } = req.body;
 
-            if (!email || !password || !confirmPassword) {
-                return res.status(400).json({ error: 'Wszystkie pola są wymagane' });
-            }
+        console.log('📝 Registration started for:', email);
 
-            if (!authService.isValidEmail(email)) {
-                return res.status(400).json({ error: 'Nieprawidłowy format email' });
-            }
+        if (!email || !password || !confirmPassword) {
+            return res.status(400).json({ error: 'Wszystkie pola są wymagane' });
+        }
 
-            if (!authService.isValidPassword(password)) {
-                return res.status(400).json({ error: 'Hasło musi mieć min. 8 znaków, 1 cyfrę i 1 wielką literę' });
-            }
+        if (!authService.isValidEmail(email)) {
+            return res.status(400).json({ error: 'Nieprawidłowy format email' });
+        }
 
-            if (password !== confirmPassword) {
-                return res.status(400).json({ error: 'Hasła nie są identyczne' });
-            }
+        if (!authService.isValidPassword(password)) {
+            return res.status(400).json({ error: 'Hasło musi mieć min. 8 znaków, 1 cyfrę i 1 wielką literę' });
+        }
 
-            const existingUser = await authService.findByEmail(email);
-            if (existingUser) {
-                return res.status(409).json({ error: 'Użytkownik z tym emailem już istnieje' });
-            }
+        if (password !== confirmPassword) {
+            return res.status(400).json({ error: 'Hasła nie są identyczne' });
+        }
 
-            // 🆕 Pobierz IP rejestracji
-            const registrationIp = getClientIp(req);
+        const existingUser = await authService.findByEmail(email);
+        if (existingUser) {
+            return res.status(409).json({ error: 'Użytkownik z tym emailem już istnieje' });
+        }
 
-            // Waliduj kod polecający (jeśli podany)
-            let referrerData = null;
-            if (referralCode) {
-                referrerData = await ReferralService.validateReferralCode(referralCode);
-            }
+        // Pobierz IP rejestracji
+        const registrationIp = getClientIp(req);
+        console.log('📝 Registration IP:', registrationIp);
 
-            // Generuj unikalny kod polecający dla nowego użytkownika
-            let userReferralCode;
-            let isUnique = false;
-            while (!isUnique) {
-                userReferralCode = crypto.randomBytes(4).toString('hex').toUpperCase();
-                const existing = await prisma.user.findFirst({
-                    where: { referralCode: userReferralCode }
-                });
-                if (!existing) isUnique = true;
-            }
+        // Waliduj kod polecający (jeśli podany)
+        let referrerData = null;
+        if (referralCode) {
+            referrerData = await ReferralService.validateReferralCode(referralCode);
+            console.log('📝 Referrer data:', referrerData ? referrerData.id : 'none');
+        }
 
-            // Pobierz ustawienia (dla czasu trwania bonusu)
-            let bonusExpires = null;
-            if (referrerData) {
+        // Generuj unikalny kod polecający dla nowego użytkownika
+        let userReferralCode;
+        let isUnique = false;
+        let attempts = 0;
+        while (!isUnique && attempts < 10) {
+            userReferralCode = crypto.randomBytes(4).toString('hex').toUpperCase();
+            const existing = await prisma.user.findFirst({
+                where: { referralCode: userReferralCode }
+            });
+            if (!existing) isUnique = true;
+            attempts++;
+        }
+
+        console.log('✅ Generated referral code:', userReferralCode);
+
+        // Pobierz ustawienia (dla czasu trwania bonusu)
+        let bonusExpires = null;
+        if (referrerData) {
+            try {
                 const settings = await ReferralService.getSettings();
                 if (settings.referralBonusDuration) {
                     bonusExpires = new Date();
                     bonusExpires.setDate(bonusExpires.getDate() + settings.referralBonusDuration);
                 }
+            } catch (settingsError) {
+                console.error('❌ Error getting settings:', settingsError);
             }
-
-            // 🆕 Hashuj IP do przechowywania
-            const ipHash = ReferralService.hashIP(registrationIp);
-
-            // 🆕 Sprawdź fraud jeśli jest referrer
-            let fraudData = { isFraud: false, reason: null };
-            if (referrerData) {
-                fraudData = await ReferralService.checkFraudulentReferral(referrerData.id, ipHash);
-            }
-
-            const passwordHash = await authService.hashPassword(password);
-
-            // Generuj kod weryfikacyjny
-            const verificationCode = emailUtils.generateCode();
-            const verificationExpires = new Date(Date.now() + 15 * 60 * 1000);
-
-            // Utwórz użytkownika
-            const newUser = await prisma.user.create({
-                data: {
-                    email: email.toLowerCase(),
-                    password_hash: passwordHash,
-                    verification_code: verificationCode,
-                    verification_expires: verificationExpires,
-                    isVerified: false,
-                    referralCode: userReferralCode,
-                    referredById: referrerData?.id || null,
-                    referralBonusExpires: bonusExpires,
-                    registrationIp: ipHash, // 🆕 Przechowuj hash IP
-                    referralIpHash: ipHash, // 🆕
-                    referralFraudFlag: fraudData.isFraud, // 🆕
-                    referralFraudReason: fraudData.reason, // 🆕
-                    referralFraudCheckedAt: referrerData ? new Date() : null // 🆕
-                }
-            });
-
-            // Wyślij email
-            try {
-                await emailUtils.sendVerificationEmail(email, verificationCode);
-            } catch (emailError) {
-                console.error('Błąd wysyłki email:', emailError);
-                await prisma.user.delete({ where: { id: newUser.id } });
-                return res.status(500).json({ error: 'Błąd wysyłania email weryfikacyjnego' });
-            }
-
-            res.status(201).json({
-                message: 'Konto utworzone. Sprawdź email i wpisz kod weryfikacyjny.',
-                requiresVerification: true,
-                email: newUser.email,
-                referredBy: !!referrerData
-            });
-
-        } catch (error) {
-            console.error('Błąd rejestracji:', error);
-            res.status(500).json({ error: 'Błąd serwera podczas rejestracji' });
         }
-    }
 
+        // Hashuj IP do przechowywania
+        let ipHash = null;
+        try {
+            if (registrationIp && registrationIp !== 'unknown') {
+                ipHash = ReferralService.hashIP(registrationIp);
+                console.log('✅ IP hashed successfully');
+            }
+        } catch (hashError) {
+            console.error('❌ Error hashing IP:', hashError);
+        }
+
+        // Sprawdź fraud jeśli jest referrer
+        let fraudData = { isFraud: false, reason: null };
+        if (referrerData && ipHash) {
+            try {
+                fraudData = await ReferralService.checkFraudulentReferral(referrerData.id, ipHash);
+                console.log('📝 Fraud check result:', fraudData);
+            } catch (fraudError) {
+                console.error('❌ Error checking fraud:', fraudError);
+            }
+        }
+
+        const passwordHash = await authService.hashPassword(password);
+
+        // Generuj kod weryfikacyjny
+        const verificationCode = emailUtils.generateCode();
+        const verificationExpires = new Date(Date.now() + 15 * 60 * 1000);
+
+        // Przygotuj dane użytkownika
+        const userData = {
+            email: email.toLowerCase(),
+            password_hash: passwordHash,
+            verification_code: verificationCode,
+            verification_expires: verificationExpires,
+            isVerified: false,
+            referralCode: userReferralCode,
+            referredById: referrerData?.id || null,
+            referralBonusExpires: bonusExpires,
+            registrationIp: ipHash,
+            referralIpHash: ipHash,
+            referralFraudFlag: fraudData.isFraud,
+            referralFraudReason: fraudData.reason,
+            referralFraudCheckedAt: referrerData ? new Date() : null
+        };
+
+        console.log('📝 Creating user with referralCode:', userData.referralCode);
+
+        // Utwórz użytkownika
+        const newUser = await prisma.user.create({
+            data: userData
+        });
+
+        console.log('✅ User created:', newUser.id, '| referralCode:', newUser.referralCode);
+
+        // Wyślij email
+        try {
+            await emailUtils.sendVerificationEmail(email, verificationCode);
+            console.log('✅ Verification email sent to:', email);
+        } catch (emailError) {
+            console.error('❌ Błąd wysyłki email:', emailError);
+            await prisma.user.delete({ where: { id: newUser.id } });
+            return res.status(500).json({ error: 'Błąd wysyłania email weryfikacyjnego' });
+        }
+
+        res.status(201).json({
+            message: 'Konto utworzone. Sprawdź email i wpisz kod weryfikacyjny.',
+            requiresVerification: true,
+            email: newUser.email,
+            referredBy: !!referrerData
+        });
+
+    } catch (error) {
+        console.error('❌ Błąd rejestracji:', error);
+        res.status(500).json({ error: 'Błąd serwera podczas rejestracji' });
+    }
+}
     // POST /api/auth/verify
     async verify(req, res) {
         try {
