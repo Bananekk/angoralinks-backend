@@ -26,13 +26,19 @@ model User {
   registrationIp       String?        @map("registration_ip")
   pendingBalance       Decimal?       @default(0) @map("pending_balance") @db.Decimal(10, 6)
   
-  // ========== POLA REFERALI ==========
+   // ========== POLA REFERALI ==========
   referralCode          String?   @unique @map("referral_code")
   referralEarnings      Decimal   @default(0) @map("referral_earnings") @db.Decimal(10, 4)
   referredById          String?   @map("referred_by_id")
   referredBy            User?     @relation("Referrals", fields: [referredById], references: [id])
   referrals             User[]    @relation("Referrals")
   referralBonusExpires  DateTime? @map("referral_bonus_expires")
+  
+  // 🆕 NOWE POLA - wykrywanie fraudu referali
+  referralIpHash        String?   @map("referral_ip_hash") @db.VarChar(64)
+  referralFraudFlag     Boolean   @default(false) @map("referral_fraud_flag")
+  referralFraudReason   String?   @map("referral_fraud_reason") @db.VarChar(255)
+  referralFraudCheckedAt DateTime? @map("referral_fraud_checked_at")
   
   // ========== RELACJE ==========
   earnings             DailyEarning[]

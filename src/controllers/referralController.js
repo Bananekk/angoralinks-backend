@@ -121,6 +121,35 @@ class ReferralController {
             res.status(500).json({ error: 'Błąd aktualizacji ustawień' });
         }
     }
+
+    // 🆕 GET /api/referrals/admin/fraud-alerts
+    async getFraudAlerts(req, res) {
+        try {
+            const alerts = await ReferralService.getFraudAlerts();
+            res.json({ alerts });
+        } catch (error) {
+            console.error('Error getting fraud alerts:', error);
+            res.status(500).json({ error: 'Błąd pobierania alertów' });
+        }
+    }
+
+    // 🆕 POST /api/referrals/admin/fraud-alerts/:userId/resolve
+    async resolveFraudAlert(req, res) {
+        try {
+            const { userId } = req.params;
+            const { action } = req.body; // 'dismiss' | 'block' | 'block_both'
+
+            if (!['dismiss', 'block', 'block_both'].includes(action)) {
+                return res.status(400).json({ error: 'Nieprawidłowa akcja' });
+            }
+
+            const result = await ReferralService.resolveFraudAlert(userId, action);
+            res.json(result);
+        } catch (error) {
+            console.error('Error resolving fraud alert:', error);
+            res.status(500).json({ error: 'Błąd rozwiązywania alertu' });
+        }
+    }
 }
 
 module.exports = new ReferralController();

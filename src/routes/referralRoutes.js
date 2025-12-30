@@ -17,4 +17,8 @@ router.get('/admin/stats', verifyToken, isAdmin, referralController.getAdminStat
 router.get('/admin/all', verifyToken, isAdmin, referralController.getAllReferrals);
 router.put('/admin/settings', verifyToken, isAdmin, referralController.updateSettings);
 
+// 🆕 Fraud alerts
+router.get('/admin/fraud-alerts', verifyToken, isAdmin, referralController.getFraudAlerts);
+router.post('/admin/fraud-alerts/:userId/resolve', verifyToken, isAdmin, referralController.resolveFraudAlert);
+
 module.exports = router;

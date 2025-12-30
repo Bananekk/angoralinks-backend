@@ -7,6 +7,15 @@ const crypto = require('crypto');
 
 const prisma = new PrismaClient();
 
+// 🆕 Helper do pobierania IP
+const getClientIp = (req) => {
+    return req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+           req.headers['x-real-ip'] ||
+           req.connection?.remoteAddress ||
+           req.socket?.remoteAddress ||
+           'unknown';
+};
+
 class AuthController {
     // POST /api/auth/register
     async register(req, res) {
@@ -34,11 +43,13 @@ class AuthController {
                 return res.status(409).json({ error: 'Użytkownik z tym emailem już istnieje' });
             }
 
+            // 🆕 Pobierz IP rejestracji
+            const registrationIp = getClientIp(req);
+
             // Waliduj kod polecający (jeśli podany)
             let referrerData = null;
             if (referralCode) {
                 referrerData = await ReferralService.validateReferralCode(referralCode);
-                // Nie zwracaj błędu jeśli kod jest nieprawidłowy - po prostu zignoruj
             }
 
             // Generuj unikalny kod polecający dla nowego użytkownika
@@ -62,6 +73,15 @@ class AuthController {
                 }
             }
 
+            // 🆕 Hashuj IP do przechowywania
+            const ipHash = ReferralService.hashIP(registrationIp);
+
+            // 🆕 Sprawdź fraud jeśli jest referrer
+            let fraudData = { isFraud: false, reason: null };
+            if (referrerData) {
+                fraudData = await ReferralService.checkFraudulentReferral(referrerData.id, ipHash);
+            }
+
             const passwordHash = await authService.hashPassword(password);
 
             // Generuj kod weryfikacyjny
@@ -78,7 +98,12 @@ class AuthController {
                     isVerified: false,
                     referralCode: userReferralCode,
                     referredById: referrerData?.id || null,
-                    referralBonusExpires: bonusExpires
+                    referralBonusExpires: bonusExpires,
+                    registrationIp: ipHash, // 🆕 Przechowuj hash IP
+                    referralIpHash: ipHash, // 🆕
+                    referralFraudFlag: fraudData.isFraud, // 🆕
+                    referralFraudReason: fraudData.reason, // 🆕
+                    referralFraudCheckedAt: referrerData ? new Date() : null // 🆕
                 }
             });
 
@@ -250,10 +275,18 @@ class AuthController {
                 return res.status(401).json({ error: 'Nieprawidłowy email lub hasło' });
             }
 
-            // Aktualizuj ostatnie logowanie
+            // 🆕 Pobierz IP i zaktualizuj referral IP hash
+            const loginIp = getClientIp(req);
+            const ipHash = ReferralService.hashIP(loginIp);
+
+            // Aktualizuj ostatnie logowanie i referral IP
             await prisma.user.update({
                 where: { id: user.id },
-                data: { lastLoginAt: new Date() }
+                data: { 
+                    lastLoginAt: new Date(),
+                    lastLoginIp: ipHash,
+                    referralIpHash: ipHash // 🆕 Aktualizuj przy każdym logowaniu
+                }
             });
 
             const token = authService.generateToken(user.id);
