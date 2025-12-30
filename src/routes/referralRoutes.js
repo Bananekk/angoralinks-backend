@@ -11,6 +11,7 @@ router.get('/settings', referralController.getPublicSettings);
 // ============ ZALOGOWANY UŻYTKOWNIK ============
 router.get('/stats', verifyToken, referralController.getMyStats);
 router.get('/commissions', verifyToken, referralController.getMyCommissions);
+router.post('/generate-code', verifyToken, referralController.generateCode);
 
 // ============ ADMIN ============
 router.get('/admin/stats', verifyToken, isAdmin, referralController.getAdminStats);
