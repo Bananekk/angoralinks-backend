@@ -112,10 +112,21 @@ class AuthController {
                 }
             });
 
-            // Wyślij welcome email (nie blokujemy jeśli się nie uda)
-            emailUtils.sendWelcomeEmail(verifiedUser.email).catch(err => {
-                console.error('Welcome email error:', err);
-            });
+            // Wyślij welcome email
+            console.log('🔔 === WELCOME EMAIL DEBUG ===');
+            console.log('🔔 Email użytkownika:', verifiedUser.email);
+            console.log('🔔 Wywołuję sendWelcomeEmail...');
+
+            emailUtils.sendWelcomeEmail(verifiedUser.email)
+                .then((result) => {
+                    console.log('✅ Welcome email wysłany! Result:', result);
+                })
+                .catch(err => {
+                    console.error('❌ Welcome email error:', err.message);
+                    console.error('❌ Full error:', err);
+                });
+
+            console.log('🔔 === END DEBUG ===');
 
             // Generuj token
             const token = authService.generateToken(verifiedUser.id);

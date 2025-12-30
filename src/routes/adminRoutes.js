@@ -1004,7 +1004,6 @@ router.put('/payouts/:id', async (req, res) => {
 // WIADOMOŚCI KONTAKTOWE
 // ======================
 
-
 router.get('/messages', async (req, res) => {
     try {
         const { page = 1, limit = 20, status = 'all' } = req.query;
@@ -1015,18 +1014,18 @@ router.get('/messages', async (req, res) => {
         let unreadCount = 0;
 
         try {
-            const where = status === 'unread' ? { is_read: false } : 
-                         status === 'read' ? { is_read: true } : {};
+            const where = status === 'unread' ? { isRead: false } : 
+                         status === 'read' ? { isRead: true } : {};
                          
             [messages, total, unreadCount] = await Promise.all([
                 prisma.contactMessage.findMany({
                     where,
-                    orderBy: { created_at: 'desc' },
+                    orderBy: { createdAt: 'desc' },
                     skip,
                     take: parseInt(limit)
                 }),
                 prisma.contactMessage.count({ where }),
-                prisma.contactMessage.count({ where: { is_read: false } })
+                prisma.contactMessage.count({ where: { isRead: false } })
             ]);
         } catch (e) {
             console.log('Model ContactMessage może nie istnieć:', e.message);
@@ -1040,8 +1039,8 @@ router.get('/messages', async (req, res) => {
                 email: m.email,
                 subject: m.subject,
                 message: m.message,
-                isRead: m.is_read,
-                createdAt: m.created_at
+                isRead: m.isRead,
+                createdAt: m.createdAt
             })),
             unreadCount,
             pagination: {
@@ -1071,13 +1070,13 @@ router.patch('/messages/:id/read', async (req, res) => {
             return res.status(404).json({ success: false, message: 'Wiadomość nie znaleziona' });
         }
         
-        if (message.is_read) {
+        if (message.isRead) {
             return res.json({ success: true, message: 'Wiadomość już była oznaczona jako przeczytana' });
         }
         
         await prisma.contactMessage.update({
             where: { id },
-            data: { is_read: true }
+            data: { isRead: true }
         });
         
         // Wyślij powiadomienie email
@@ -1096,7 +1095,7 @@ router.patch('/messages/:id/read', async (req, res) => {
     }
 });
 
-// PUT - alias dla kompatybilności z frontendem (NAPRAWA BŁĘDU 404!)
+// PUT - alias dla kompatybilności z frontendem
 router.put('/messages/:id/read', async (req, res) => {
     try {
         const { id } = req.params;
@@ -1110,13 +1109,13 @@ router.put('/messages/:id/read', async (req, res) => {
             return res.status(404).json({ success: false, message: 'Wiadomość nie znaleziona' });
         }
         
-        if (message.is_read) {
+        if (message.isRead) {
             return res.json({ success: true, message: 'Wiadomość już była oznaczona jako przeczytana' });
         }
         
         await prisma.contactMessage.update({
             where: { id },
-            data: { is_read: true }
+            data: { isRead: true }
         });
         
         // Wyślij powiadomienie email
