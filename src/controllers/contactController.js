@@ -9,18 +9,15 @@ class ContactController {
         try {
             const { name, email, subject, message } = req.body;
 
-            // Walidacja
             if (!name || !email || !subject || !message) {
                 return res.status(400).json({ error: 'Wszystkie pola są wymagane' });
             }
 
-            // Walidacja email
             const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
             if (!emailRegex.test(email)) {
                 return res.status(400).json({ error: 'Nieprawidłowy adres email' });
             }
 
-            // Walidacja długości
             if (name.length > 100) {
                 return res.status(400).json({ error: 'Imię jest za długie (max 100 znaków)' });
             }
@@ -28,7 +25,7 @@ class ContactController {
                 return res.status(400).json({ error: 'Wiadomość jest za długa (max 5000 znaków)' });
             }
 
-            // Zapisz wiadomość
+            // ContactMessage używa camelCase (isRead, createdAt)
             const contactMessage = await prisma.contactMessage.create({
                 data: {
                     name: name.trim(),
@@ -38,12 +35,15 @@ class ContactController {
                 }
             });
 
-            // Wyślij email potwierdzający do użytkownika (nie blokujemy odpowiedzi)
+            // Wyślij potwierdzenie
+            console.log('🔔 Wysyłam potwierdzenie kontaktu do:', email);
             emailUtils.sendContactConfirmation(
                 email.trim().toLowerCase(),
                 name.trim(),
                 subject.trim()
-            ).catch(err => console.error('Contact confirmation email error:', err));
+            )
+                .then(() => console.log('✅ Contact confirmation email wysłany!'))
+                .catch(err => console.error('❌ Contact confirmation error:', err));
 
             res.status(201).json({
                 message: 'Wiadomość została wysłana',
@@ -60,12 +60,11 @@ class ContactController {
     async list(req, res) {
         try {
             const messages = await prisma.contactMessage.findMany({
-                orderBy: { created_at: 'desc' }
+                orderBy: { createdAt: 'desc' }
             });
 
-            // Policz nieprzeczytane
             const unreadCount = await prisma.contactMessage.count({
-                where: { is_read: false }
+                where: { isRead: false }
             });
 
             res.json({
@@ -75,8 +74,8 @@ class ContactController {
                     email: m.email,
                     subject: m.subject,
                     message: m.message,
-                    isRead: m.is_read,
-                    createdAt: m.created_at
+                    isRead: m.isRead,
+                    createdAt: m.createdAt
                 })),
                 unreadCount
             });
@@ -101,23 +100,25 @@ class ContactController {
                 return res.status(404).json({ error: 'Wiadomość nie znaleziona' });
             }
 
-            // Jeśli już przeczytana, nie wysyłaj ponownie
-            if (message.is_read) {
+            if (message.isRead) {
                 return res.json({ message: 'Wiadomość już była oznaczona jako przeczytana' });
             }
 
             await prisma.contactMessage.update({
                 where: { id },
-                data: { is_read: true }
+                data: { isRead: true }
             });
 
-            // Wyślij powiadomienie email do użytkownika
+            // Wyślij powiadomienie email
             if (sendNotification) {
+                console.log('🔔 Wysyłam powiadomienie o przeczytaniu do:', message.email);
                 emailUtils.sendMessageReadNotification(
                     message.email,
                     message.name,
                     message.subject
-                ).catch(err => console.error('Message read notification error:', err));
+                )
+                    .then(() => console.log('✅ Message read notification wysłany!'))
+                    .catch(err => console.error('❌ Message read notification error:', err));
             }
 
             res.json({ message: 'Oznaczono jako przeczytane' });

@@ -37,14 +37,14 @@ class AuthController {
             const verificationCode = emailUtils.generateCode();
             const verificationExpires = new Date(Date.now() + 15 * 60 * 1000);
 
-            // Utwórz użytkownika
+            // Utwórz użytkownika - UWAGA: password_hash i verification_* są bez @map!
             const newUser = await prisma.user.create({
                 data: {
                     email: email.toLowerCase(),
                     password_hash: passwordHash,
                     verification_code: verificationCode,
                     verification_expires: verificationExpires,
-                    is_verified: false
+                    isVerified: false
                 }
             });
 
@@ -86,7 +86,7 @@ class AuthController {
                 return res.status(404).json({ error: 'Użytkownik nie znaleziony' });
             }
 
-            if (user.is_verified) {
+            if (user.isVerified) {
                 return res.status(400).json({ error: 'Konto już zweryfikowane' });
             }
 
@@ -106,27 +106,17 @@ class AuthController {
             const verifiedUser = await prisma.user.update({
                 where: { id: user.id },
                 data: {
-                    is_verified: true,
+                    isVerified: true,
                     verification_code: null,
                     verification_expires: null
                 }
             });
 
             // Wyślij welcome email
-            console.log('🔔 === WELCOME EMAIL DEBUG ===');
-            console.log('🔔 Email użytkownika:', verifiedUser.email);
-            console.log('🔔 Wywołuję sendWelcomeEmail...');
-
+            console.log('🔔 Wysyłam welcome email do:', verifiedUser.email);
             emailUtils.sendWelcomeEmail(verifiedUser.email)
-                .then((result) => {
-                    console.log('✅ Welcome email wysłany! Result:', result);
-                })
-                .catch(err => {
-                    console.error('❌ Welcome email error:', err.message);
-                    console.error('❌ Full error:', err);
-                });
-
-            console.log('🔔 === END DEBUG ===');
+                .then(() => console.log('✅ Welcome email wysłany!'))
+                .catch(err => console.error('❌ Welcome email error:', err));
 
             // Generuj token
             const token = authService.generateToken(verifiedUser.id);
@@ -137,7 +127,7 @@ class AuthController {
                     id: verifiedUser.id,
                     email: verifiedUser.email,
                     balance: parseFloat(verifiedUser.balance || 0),
-                    isVerified: verifiedUser.is_verified
+                    isVerified: verifiedUser.isVerified
                 },
                 token
             });
@@ -165,7 +155,7 @@ class AuthController {
                 return res.status(404).json({ error: 'Użytkownik nie znaleziony' });
             }
 
-            if (user.is_verified) {
+            if (user.isVerified) {
                 return res.status(400).json({ error: 'Konto już zweryfikowane' });
             }
 
@@ -211,7 +201,7 @@ class AuthController {
             }
 
             // Sprawdź czy zweryfikowany
-            if (!user.is_verified) {
+            if (!user.isVerified) {
                 return res.status(403).json({ 
                     error: 'Konto nie zostało zweryfikowane. Sprawdź email.',
                     requiresVerification: true,
@@ -227,7 +217,7 @@ class AuthController {
             // Aktualizuj ostatnie logowanie
             await prisma.user.update({
                 where: { id: user.id },
-                data: { last_login_at: new Date() }
+                data: { lastLoginAt: new Date() }
             });
 
             const token = authService.generateToken(user.id);
@@ -245,8 +235,8 @@ class AuthController {
                     id: user.id,
                     email: user.email,
                     balance: parseFloat(user.balance || 0),
-                    isVerified: user.is_verified,
-                    isAdmin: user.is_admin
+                    isVerified: user.isVerified,
+                    isAdmin: user.isAdmin
                 },
                 token
             });

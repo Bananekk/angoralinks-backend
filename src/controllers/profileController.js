@@ -14,9 +14,9 @@ class ProfileController {
                     id: true,
                     email: true,
                     balance: true,
-                    total_earned: true,
-                    is_verified: true,
-                    created_at: true,
+                    totalEarned: true,
+                    isVerified: true,
+                    createdAt: true,
                     _count: {
                         select: { links: true }
                     }
@@ -32,10 +32,10 @@ class ProfileController {
                     id: user.id,
                     email: user.email,
                     balance: parseFloat(user.balance || 0),
-                    totalEarned: parseFloat(user.total_earned || 0),
-                    isVerified: user.is_verified,
+                    totalEarned: parseFloat(user.totalEarned || 0),
+                    isVerified: user.isVerified,
                     linksCount: user._count.links,
-                    createdAt: user.created_at
+                    createdAt: user.createdAt
                 }
             });
 
@@ -50,12 +50,10 @@ class ProfileController {
         try {
             const { email } = req.body;
 
-            // Walidacja emaila
             if (email && !authService.isValidEmail(email)) {
                 return res.status(400).json({ error: 'Nieprawidłowy format email' });
             }
 
-            // Sprawdź czy email jest zajęty
             if (email) {
                 const existingUser = await prisma.user.findUnique({
                     where: { email: email.toLowerCase() }
@@ -92,24 +90,20 @@ class ProfileController {
         try {
             const { currentPassword, newPassword, confirmPassword } = req.body;
 
-            // Walidacja pól
             if (!currentPassword || !newPassword || !confirmPassword) {
                 return res.status(400).json({ error: 'Wszystkie pola są wymagane' });
             }
 
-            // Sprawdź zgodność nowych haseł
             if (newPassword !== confirmPassword) {
                 return res.status(400).json({ error: 'Nowe hasła nie są identyczne' });
             }
 
-            // Walidacja nowego hasła
             if (!authService.isValidPassword(newPassword)) {
                 return res.status(400).json({ 
                     error: 'Nowe hasło musi mieć min. 8 znaków, 1 cyfrę i 1 wielką literę' 
                 });
             }
 
-            // Pobierz użytkownika z hasłem
             const user = await prisma.user.findUnique({
                 where: { id: req.user.id }
             });
@@ -118,16 +112,14 @@ class ProfileController {
                 return res.status(404).json({ error: 'Użytkownik nie znaleziony' });
             }
 
-            // Sprawdź aktualne hasło
+            // password_hash - bez @map w schema!
             const isValid = await authService.verifyPassword(currentPassword, user.password_hash);
             if (!isValid) {
                 return res.status(401).json({ error: 'Aktualne hasło jest nieprawidłowe' });
             }
 
-            // Hashuj nowe hasło
             const newPasswordHash = await authService.hashPassword(newPassword);
 
-            // Zaktualizuj hasło
             await prisma.user.update({
                 where: { id: req.user.id },
                 data: { password_hash: newPasswordHash }
@@ -150,7 +142,6 @@ class ProfileController {
                 return res.status(400).json({ error: 'Hasło jest wymagane' });
             }
 
-            // Pobierz użytkownika
             const user = await prisma.user.findUnique({
                 where: { id: req.user.id }
             });
@@ -159,24 +150,23 @@ class ProfileController {
                 return res.status(404).json({ error: 'Użytkownik nie znaleziony' });
             }
 
-            // Sprawdź hasło
+            // password_hash - bez @map w schema!
             const isValid = await authService.verifyPassword(password, user.password_hash);
             if (!isValid) {
                 return res.status(401).json({ error: 'Nieprawidłowe hasło' });
             }
 
-            // Zapisz email przed usunięciem
             const userEmail = user.email;
 
-            // Usuń użytkownika (kaskadowo usunie też linki i wizyty)
             await prisma.user.delete({
                 where: { id: req.user.id }
             });
 
-            // Wyślij email potwierdzający usunięcie (nie blokujemy odpowiedzi)
-            emailUtils.sendAccountDeletedEmail(userEmail).catch(err => {
-                console.error('Account deleted email error:', err);
-            });
+            // Wyślij email o usunięciu konta
+            console.log('🔔 Wysyłam email o usunięciu konta do:', userEmail);
+            emailUtils.sendAccountDeletedEmail(userEmail)
+                .then(() => console.log('✅ Account deleted email wysłany!'))
+                .catch(err => console.error('❌ Account deleted email error:', err));
 
             res.json({ message: 'Konto zostało usunięte' });
 
