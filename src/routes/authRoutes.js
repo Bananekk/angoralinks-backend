@@ -3,7 +3,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { PrismaClient } = require('@prisma/client');
-const { sendVerificationEmail } = require('../utils/email');
+const { sendVerificationEmail, sendWelcomeEmail } = require('../utils/email');
 const { verifyToken } = require('../middleware/auth');
 
 const router = express.Router();
@@ -251,7 +251,13 @@ router.post('/verify', async (req, res) => {
                 verification_expires: null
             }
         });
-        
+
+        // Wyślij welcome email
+        console.log('🔔 Wysyłam welcome email do:', user.email);
+        sendWelcomeEmail(user.email)
+            .then(() => console.log('✅ Welcome email wysłany!'))
+            .catch(err => console.error('❌ Welcome email error:', err));
+
         // Wygeneruj token JWT (automatyczne logowanie)
         const token = jwt.sign(
             { 
