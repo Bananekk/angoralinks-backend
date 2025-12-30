@@ -70,9 +70,9 @@ async function sendWelcomeEmail(email) {
                         <p style="color: #94a3b8; text-align: center;">Twoje konto zostało pomyślnie zweryfikowane. Możesz teraz:</p>
                         <ul style="color: #94a3b8; padding-left: 20px;">
                             <li style="margin: 8px 0;">🔗 Tworzyć skrócone linki</li>
-                            <li style="margin: 8px 0;">💰 Zarabiać na reklamach (85% CPM)</li>
+                            <li style="margin: 8px 0;">💰 Zarabiać na reklamach</li>
                             <li style="margin: 8px 0;">📊 Śledzić statystyki w czasie rzeczywistym</li>
-                            <li style="margin: 8px 0;">💸 Wypłacać zarobki od $5</li>
+                            <li style="margin: 8px 0;">💸 Wypłacać zarobki od $10</li>
                         </ul>
                         <div style="text-align: center; margin-top: 24px;">
                             <a href="${FRONTEND_URL}/dashboard" style="display: inline-block; background-color: #0ea5e9; color: #ffffff; padding: 12px 32px; border-radius: 8px; text-decoration: none; font-weight: bold;">
@@ -80,7 +80,7 @@ async function sendWelcomeEmail(email) {
                             </a>
                         </div>
                         <p style="color: #64748b; font-size: 12px; text-align: center; margin-top: 24px;">
-                            © 2024 AngoraLinks. Wszystkie prawa zastrzeżone.
+                            © 2025 AngoraLinks. Wszystkie prawa zastrzeżone.
                         </p>
                     </div>
                 </div>
@@ -168,7 +168,7 @@ async function sendPayoutNotification(email, amount, status, method) {
                         ${status === 'COMPLETED' ? '<p style="color: #22c55e; text-align: center; margin-top: 16px;">Środki powinny dotrzeć w ciągu 1-3 dni roboczych.</p>' : ''}
                         ${status === 'REJECTED' ? '<p style="color: #ef4444; text-align: center; margin-top: 16px;">Jeśli masz pytania, skontaktuj się z nami.</p>' : ''}
                         <p style="color: #64748b; font-size: 12px; text-align: center; margin-top: 24px;">
-                            © 2024 AngoraLinks
+                            © 2025 AngoraLinks
                         </p>
                     </div>
                 </div>
@@ -307,7 +307,7 @@ async function sendAccountDeletedEmail(email) {
                             </a>
                         </div>
                         <p style="color: #64748b; font-size: 12px; text-align: center; margin-top: 24px;">
-                            © 2024 AngoraLinks
+                            © 2025 AngoraLinks
                         </p>
                     </div>
                 </div>
