@@ -5,23 +5,30 @@ const crypto = require('crypto');
 const { PrismaClient } = require('@prisma/client');
 const { sendVerificationEmail, sendWelcomeEmail } = require('../utils/email');
 const { verifyToken } = require('../middleware/auth');
+const ReferralService = require('../services/referralService');
 
 const router = express.Router();
 const prisma = new PrismaClient();
 
-// Pomocnicze funkcje (jeśli encryption nie istnieje)
+// Pomocnicze funkcje
 let encrypt, getClientIp, getUserAgent;
 try {
     encrypt = require('../utils/encryption').encrypt;
 } catch (e) {
-    encrypt = (text) => text; // fallback
+    encrypt = (text) => text;
 }
 try {
     const ipHelper = require('../utils/ipHelper');
     getClientIp = ipHelper.getClientIp;
     getUserAgent = ipHelper.getUserAgent;
 } catch (e) {
-    getClientIp = (req) => req.ip || 'unknown';
+    getClientIp = (req) => {
+        return req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+               req.headers['x-real-ip'] ||
+               req.connection?.remoteAddress ||
+               req.ip || 
+               'unknown';
+    };
     getUserAgent = (req) => req.headers['user-agent'] || 'unknown';
 }
 
@@ -33,11 +40,17 @@ function generateVerificationCode() {
 }
 
 // =====================================
-// POST /api/auth/register - Rejestracja
+// POST /api/auth/register - Rejestracja Z OBSŁUGĄ REFERRALI
 // =====================================
 router.post('/register', async (req, res) => {
     try {
-        const { email, password } = req.body;
+        const { email, password, confirmPassword, referralCode } = req.body;
+        
+        console.log('========================================');
+        console.log('📝 REGISTRATION STARTED');
+        console.log('📝 Email:', email);
+        console.log('📝 Received referralCode:', referralCode || 'NONE');
+        console.log('========================================');
         
         if (!email || !password) {
             return res.status(400).json({ 
@@ -48,6 +61,13 @@ router.post('/register', async (req, res) => {
         if (password.length < 8) {
             return res.status(400).json({ 
                 error: 'Hasło musi mieć minimum 8 znaków' 
+            });
+        }
+
+        // Sprawdź confirmPassword jeśli podane
+        if (confirmPassword && password !== confirmPassword) {
+            return res.status(400).json({ 
+                error: 'Hasła nie są identyczne' 
             });
         }
         
@@ -65,7 +85,102 @@ router.post('/register', async (req, res) => {
         const verificationCode = generateVerificationCode();
         const clientIp = getClientIp(req);
         const userAgent = getUserAgent(req);
+        
+        // ========================================
+        // OBSŁUGA KODU POLECAJĄCEGO
+        // ========================================
+        let referrerId = null;
+        let referrerData = null;
+        let bonusExpires = null;
+        let ipHash = null;
+        let fraudData = { isFraud: false, reason: null };
+
+        // Hash IP
+        try {
+            if (clientIp && clientIp !== 'unknown') {
+                ipHash = ReferralService.hashIP(clientIp);
+                console.log('✅ IP hashed successfully');
+            }
+        } catch (hashError) {
+            console.error('❌ Error hashing IP:', hashError.message);
+        }
+
+        // Waliduj kod polecający
+        if (referralCode && referralCode.trim() !== '') {
+            const cleanCode = referralCode.trim().toUpperCase();
+            console.log('🔍 Validating referral code:', cleanCode);
+            
+            try {
+                referrerData = await ReferralService.validateReferralCode(cleanCode);
+                
+                if (referrerData) {
+                    referrerId = referrerData.id;
+                    console.log('✅ Referrer FOUND:', {
+                        id: referrerData.id,
+                        email: referrerData.email
+                    });
+
+                    // Pobierz ustawienia bonusu
+                    try {
+                        const settings = await ReferralService.getSettings();
+                        if (settings && settings.referralBonusDuration) {
+                            bonusExpires = new Date();
+                            bonusExpires.setDate(bonusExpires.getDate() + settings.referralBonusDuration);
+                            console.log('📝 Bonus expires:', bonusExpires);
+                        }
+                    } catch (settingsError) {
+                        console.error('❌ Error getting settings:', settingsError.message);
+                    }
+
+                    // Sprawdź fraud
+                    if (ipHash) {
+                        try {
+                            fraudData = await ReferralService.checkFraudulentReferral(referrerId, ipHash);
+                            console.log('📝 Fraud check result:', fraudData);
+                        } catch (fraudError) {
+                            console.error('❌ Error checking fraud:', fraudError.message);
+                        }
+                    }
+                } else {
+                    console.log('⚠️ Referral code NOT FOUND:', cleanCode);
+                }
+            } catch (refError) {
+                console.error('❌ Error validating referral code:', refError.message);
+            }
+        }
+
+        // ========================================
+        // GENEROWANIE KODU POLECAJĄCEGO DLA NOWEGO UŻYTKOWNIKA
+        // ========================================
+        let userReferralCode = null;
+        let isUnique = false;
+        let attempts = 0;
+
+        while (!isUnique && attempts < 10) {
+            userReferralCode = crypto.randomBytes(4).toString('hex').toUpperCase();
+            const existing = await prisma.user.findFirst({
+                where: { referralCode: userReferralCode }
+            });
+            if (!existing) isUnique = true;
+            attempts++;
+        }
+
+        if (!isUnique) {
+            console.error('❌ Failed to generate unique referral code');
+            userReferralCode = null;
+        } else {
+            console.log('✅ Generated referral code:', userReferralCode);
+        }
+
+        // ========================================
+        // TWORZENIE UŻYTKOWNIKA
+        // ========================================
         const encryptedIp = encrypt(clientIp);
+
+        console.log('📝 Creating user with:');
+        console.log('   - referralCode:', userReferralCode);
+        console.log('   - referredById:', referrerId);
+        console.log('   - referralFraudFlag:', fraudData.isFraud);
         
         const user = await prisma.user.create({
             data: {
@@ -75,9 +190,21 @@ router.post('/register', async (req, res) => {
                 verification_expires: new Date(Date.now() + 24 * 60 * 60 * 1000),
                 registrationIp: encryptedIp,
                 lastLoginIp: encryptedIp,
-                lastLoginAt: new Date()
+                lastLoginAt: new Date(),
+                // POLA REFERRALI
+                referralCode: userReferralCode,
+                referredById: referrerId,
+                referralBonusExpires: bonusExpires,
+                referralIpHash: ipHash,
+                referralFraudFlag: fraudData.isFraud,
+                referralFraudReason: fraudData.reason || null,
+                referralFraudCheckedAt: referrerId ? new Date() : null
             }
         });
+
+        console.log('✅ User created:', user.id);
+        console.log('   - referralCode:', user.referralCode);
+        console.log('   - referredById:', user.referredById);
         
         // Zapisz log IP
         try {
@@ -96,17 +223,26 @@ router.post('/register', async (req, res) => {
         // Wyślij email weryfikacyjny
         try {
             await sendVerificationEmail(email, verificationCode);
+            console.log('✅ Verification email sent');
         } catch (emailError) {
-            console.error('Błąd wysyłania emaila:', emailError.message);
+            console.error('❌ Błąd wysyłania emaila:', emailError.message);
         }
+
+        console.log('========================================');
+        console.log('✅ REGISTRATION COMPLETED');
+        console.log('========================================');
         
         res.status(201).json({
             success: true,
-            message: 'Konto zostało utworzone. Sprawdź email aby je zweryfikować.'
+            message: 'Konto zostało utworzone. Sprawdź email aby je zweryfikować.',
+            referredBy: !!referrerId
         });
         
     } catch (error) {
-        console.error('Błąd rejestracji:', error);
+        console.error('========================================');
+        console.error('❌ REGISTRATION ERROR:', error.message);
+        console.error('❌ Stack:', error.stack);
+        console.error('========================================');
         res.status(500).json({ 
             error: 'Błąd serwera podczas rejestracji' 
         });
@@ -160,13 +296,22 @@ router.post('/login', async (req, res) => {
         const clientIp = getClientIp(req);
         const userAgent = getUserAgent(req);
         const encryptedIp = encrypt(clientIp);
+
+        // Hash IP dla referrali
+        let ipHash = null;
+        try {
+            ipHash = ReferralService.hashIP(clientIp);
+        } catch (e) {
+            console.error('Error hashing login IP:', e.message);
+        }
         
         // Aktualizuj ostatnie logowanie
         await prisma.user.update({
             where: { id: user.id },
             data: {
                 lastLoginIp: encryptedIp,
-                lastLoginAt: new Date()
+                lastLoginAt: new Date(),
+                referralIpHash: ipHash
             }
         });
         
@@ -203,7 +348,8 @@ router.post('/login', async (req, res) => {
                 email: user.email,
                 isAdmin: user.isAdmin,
                 balance: parseFloat(user.balance) || 0,
-                totalEarned: parseFloat(user.totalEarned) || 0
+                totalEarned: parseFloat(user.totalEarned) || 0,
+                referralCode: user.referralCode
             }
         });
         
@@ -258,7 +404,7 @@ router.post('/verify', async (req, res) => {
             .then(() => console.log('✅ Welcome email wysłany!'))
             .catch(err => console.error('❌ Welcome email error:', err));
 
-        // Wygeneruj token JWT (automatyczne logowanie)
+        // Wygeneruj token JWT
         const token = jwt.sign(
             { 
                 userId: user.id, 
@@ -278,7 +424,8 @@ router.post('/verify', async (req, res) => {
                 email: user.email,
                 isAdmin: user.isAdmin,
                 balance: parseFloat(user.balance) || 0,
-                totalEarned: parseFloat(user.totalEarned) || 0
+                totalEarned: parseFloat(user.totalEarned) || 0,
+                referralCode: user.referralCode
             }
         });
         
@@ -291,7 +438,7 @@ router.post('/verify', async (req, res) => {
 });
 
 // =====================================
-// GET /api/auth/verify/:token - Weryfikacja przez link (zachowane dla kompatybilności)
+// GET /api/auth/verify/:token - Weryfikacja przez link
 // =====================================
 router.get('/verify/:token', async (req, res) => {
     try {
@@ -388,7 +535,7 @@ router.post('/resend-code', async (req, res) => {
 });
 
 // =====================================
-// POST /api/auth/resend-verification - Alias (zachowane dla kompatybilności)
+// POST /api/auth/resend-verification - Alias
 // =====================================
 router.post('/resend-verification', async (req, res) => {
     try {
@@ -457,7 +604,8 @@ router.get('/me', verifyToken, async (req, res) => {
                 isVerified: true,
                 balance: true,
                 totalEarned: true,
-                createdAt: true
+                createdAt: true,
+                referralCode: true
             }
         });
         
