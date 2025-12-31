@@ -5,6 +5,8 @@ const prisma = new PrismaClient();
 
 class ReferralService {
 
+    // ================== HASHING ==================
+
     // Generuje unikalny kod polecający
     static generateReferralCode() {
         return crypto.randomBytes(4).toString('hex').toUpperCase();
@@ -12,10 +14,56 @@ class ReferralService {
 
     // Hashuje IP (taki sam algorytm jak w earningsService)
     static hashIP(ip) {
+        if (!ip) return null;
         const salt = process.env.IP_HASH_SALT || 'angoralinks-2024';
         return crypto
             .createHash('sha256')
             .update(ip + salt)
+            .digest('hex')
+            .substring(0, 32);
+    }
+
+    // 🆕 Hashuje User-Agent
+    static hashUserAgent(userAgent) {
+        if (!userAgent) return null;
+        const salt = process.env.UA_HASH_SALT || 'angoralinks-ua-2024';
+        return crypto
+            .createHash('sha256')
+            .update(userAgent + salt)
+            .digest('hex')
+            .substring(0, 32);
+    }
+
+    // 🆕 Generuje fingerprint urządzenia
+    static generateDeviceFingerprint(deviceData) {
+        if (!deviceData) return null;
+        
+        const {
+            screenResolution,
+            timezone,
+            language,
+            platform,
+            colorDepth,
+            hardwareConcurrency,
+            deviceMemory
+        } = deviceData;
+        
+        const fingerprintString = [
+            screenResolution || '',
+            timezone || '',
+            language || '',
+            platform || '',
+            colorDepth || '',
+            hardwareConcurrency || '',
+            deviceMemory || ''
+        ].join('|');
+        
+        if (fingerprintString === '||||||') return null;
+        
+        const salt = process.env.FP_HASH_SALT || 'angoralinks-fp-2024';
+        return crypto
+            .createHash('sha256')
+            .update(fingerprintString + salt)
             .digest('hex')
             .substring(0, 32);
     }
@@ -88,14 +136,15 @@ class ReferralService {
         return settings;
     }
 
-    // Waliduje kod polecający przy rejestracji
+    // 🆕 Waliduje kod polecający przy rejestracji - ROZSZERZONA
     static async validateReferralCode(code) {
         if (!code) return null;
 
         const referrer = await prisma.user.findFirst({
             where: { 
                 referralCode: code.toUpperCase(),
-                isActive: true
+                isActive: true,
+                referralDisabled: false  // 🆕 Sprawdź czy zaproszenia nie są wyłączone
             },
             select: {
                 id: true,
@@ -103,49 +152,276 @@ class ReferralService {
                 isActive: true,
                 referralCode: true,
                 referralIpHash: true,
-                registrationIp: true
+                registrationIp: true,
+                deviceFingerprint: true,
+                userAgentHash: true,
+                browserLanguage: true,
+                screenResolution: true,
+                timezone: true,
+                createdAt: true,
+                referralDisabled: true,
+                referrals: {
+                    select: {
+                        id: true,
+                        referralIpHash: true,
+                        deviceFingerprint: true,
+                        createdAt: true
+                    },
+                    orderBy: { createdAt: 'desc' },
+                    take: 10
+                }
             }
         });
 
         return referrer || null;
     }
 
-    // Sprawdza czy IP poleconego matchuje z IP polecającego
-    static async checkFraudulentReferral(referrerId, registrationIpHash) {
+    // 🆕 ROZSZERZONE sprawdzenie fraudu
+    static async checkFraudulentReferral(referrerId, registrationData) {
+        const {
+            ipHash,
+            userAgentHash,
+            deviceFingerprint,
+            browserLanguage,
+            screenResolution,
+            timezone
+        } = registrationData;
+
+        // Pobierz dane polecającego
         const referrer = await prisma.user.findUnique({
             where: { id: referrerId },
             select: {
                 id: true,
+                email: true,
                 referralIpHash: true,
-                registrationIp: true
+                registrationIp: true,
+                deviceFingerprint: true,
+                userAgentHash: true,
+                browserLanguage: true,
+                screenResolution: true,
+                timezone: true,
+                createdAt: true,
+                referrals: {
+                    select: {
+                        id: true,
+                        referralIpHash: true,
+                        deviceFingerprint: true,
+                        createdAt: true
+                    },
+                    orderBy: { createdAt: 'desc' },
+                    take: 10
+                }
             }
         });
 
-        if (!referrer) return { isFraud: false };
+        if (!referrer) {
+            return { isSuspicious: false, riskScore: 0, reasons: [], details: {} };
+        }
 
+        const reasons = [];
+        const details = {
+            ipMatch: false,
+            deviceMatch: false,
+            userAgentMatch: false,
+            timingAnomaly: false,
+            patternAnomaly: false
+        };
+        let riskScore = 0;
+
+        // Zbierz wszystkie hashe IP polecającego
         const referrerIpHashes = [];
-        
-        if (referrer.referralIpHash) {
-            referrerIpHashes.push(referrer.referralIpHash);
-        }
-        
-        if (referrer.registrationIp) {
-            if (referrer.registrationIp.length === 32 && /^[a-f0-9]+$/i.test(referrer.registrationIp)) {
-                referrerIpHashes.push(referrer.registrationIp);
-            }
+        if (referrer.referralIpHash) referrerIpHashes.push(referrer.referralIpHash);
+        if (referrer.registrationIp && referrer.registrationIp.length === 32 && /^[a-f0-9]+$/i.test(referrer.registrationIp)) {
+            referrerIpHashes.push(referrer.registrationIp);
         }
 
-        const isFraud = referrerIpHashes.includes(registrationIpHash);
+        // 1. Sprawdzenie IP
+        if (ipHash && referrerIpHashes.includes(ipHash)) {
+            reasons.push('same_ip_as_referrer');
+            details.ipMatch = true;
+            riskScore += 40;
+        }
+
+        // 2. Sprawdzenie Device Fingerprint
+        if (deviceFingerprint && referrer.deviceFingerprint === deviceFingerprint) {
+            reasons.push('same_device_fingerprint');
+            details.deviceMatch = true;
+            riskScore += 35;
+        }
+
+        // 3. Sprawdzenie User-Agent
+        if (userAgentHash && referrer.userAgentHash === userAgentHash) {
+            reasons.push('same_user_agent');
+            details.userAgentMatch = true;
+            riskScore += 15;
+        }
+
+        // 4. Sprawdzenie podobieństwa profilu urządzenia
+        const profileSimilarity = this.calculateProfileSimilarity(
+            {
+                browserLanguage: referrer.browserLanguage,
+                screenResolution: referrer.screenResolution,
+                timezone: referrer.timezone
+            },
+            { browserLanguage, screenResolution, timezone }
+        );
+
+        if (profileSimilarity >= 100) {
+            reasons.push('identical_device_profile');
+            riskScore += 20;
+        } else if (profileSimilarity >= 66) {
+            reasons.push('similar_device_profile');
+            riskScore += 10;
+        }
+
+        // 5. Sprawdzenie timing anomalii
+        const referrerAge = Date.now() - new Date(referrer.createdAt).getTime();
+        const hoursSinceReferrerCreated = referrerAge / (1000 * 60 * 60);
+
+        if (hoursSinceReferrerCreated < 1) {
+            reasons.push('suspicious_timing_very_fast');
+            details.timingAnomaly = true;
+            riskScore += 15;
+        } else if (hoursSinceReferrerCreated < 24) {
+            reasons.push('suspicious_timing_fast');
+            details.timingAnomaly = true;
+            riskScore += 5;
+        }
+
+        // 6. Sprawdzenie wzorców w poprzednich referralach
+        const patternAnomaly = this.checkReferralPatterns(referrer.referrals, {
+            ipHash,
+            deviceFingerprint
+        });
+
+        if (patternAnomaly.isSuspicious) {
+            reasons.push(...patternAnomaly.reasons);
+            details.patternAnomaly = true;
+            riskScore += patternAnomaly.score;
+        }
+
+        // Ogranicz do 100
+        riskScore = Math.min(100, riskScore);
 
         return {
-            isFraud,
-            reason: isFraud ? 'same_ip_as_referrer' : null,
-            matchedHash: isFraud ? registrationIpHash : null
+            isSuspicious: riskScore >= 30,
+            riskScore,
+            reasons,
+            details,
+            // Stara kompatybilność
+            isFraud: riskScore >= 30,
+            reason: reasons.join(', ') || null
         };
     }
 
-    // Przypisanie referera z wykrywaniem fraudu
-    static async assignReferrer(userId, referralCode, registrationIp) {
+    // 🆕 Oblicza podobieństwo profilu urządzenia
+    static calculateProfileSimilarity(profile1, profile2) {
+        let matches = 0;
+        let total = 0;
+
+        const fields = ['browserLanguage', 'screenResolution', 'timezone'];
+
+        for (const field of fields) {
+            if (profile1[field] && profile2[field]) {
+                total++;
+                if (profile1[field] === profile2[field]) {
+                    matches++;
+                }
+            }
+        }
+
+        if (total === 0) return 0;
+        return Math.round((matches / total) * 100);
+    }
+
+    // 🆕 Sprawdza wzorce w poprzednich referralach
+    static checkReferralPatterns(existingReferrals, newReferralData) {
+        const reasons = [];
+        let score = 0;
+
+        if (!existingReferrals || existingReferrals.length === 0) {
+            return { isSuspicious: false, reasons: [], score: 0 };
+        }
+
+        // Sprawdź czy nowy referral ma takie samo IP jak którykolwiek poprzedni
+        if (newReferralData.ipHash) {
+            const sameIpReferrals = existingReferrals.filter(
+                r => r.referralIpHash === newReferralData.ipHash
+            );
+
+            if (sameIpReferrals.length > 0) {
+                reasons.push('ip_matches_previous_referrals');
+                score += 25;
+            }
+        }
+
+        // Sprawdź czy nowy referral ma taki sam fingerprint jak którykolwiek poprzedni
+        if (newReferralData.deviceFingerprint) {
+            const sameDeviceReferrals = existingReferrals.filter(
+                r => r.deviceFingerprint === newReferralData.deviceFingerprint
+            );
+
+            if (sameDeviceReferrals.length > 0) {
+                reasons.push('device_matches_previous_referrals');
+                score += 30;
+            }
+        }
+
+        // Sprawdź burst pattern (wiele rejestracji w krótkim czasie)
+        const recentReferrals = existingReferrals.filter(r => {
+            const age = Date.now() - new Date(r.createdAt).getTime();
+            return age < 24 * 60 * 60 * 1000; // ostatnie 24h
+        });
+
+        if (recentReferrals.length >= 5) {
+            reasons.push('burst_referral_pattern');
+            score += 20;
+        } else if (recentReferrals.length >= 3) {
+            reasons.push('high_referral_frequency');
+            score += 10;
+        }
+
+        return {
+            isSuspicious: reasons.length > 0,
+            reasons,
+            score
+        };
+    }
+
+    // 🆕 Tworzy alert fraudu
+    static async createFraudAlert(referrerId, referredId, fraudCheck) {
+        const { riskScore, reasons, details } = fraudCheck;
+
+        try {
+            return await prisma.fraudAlert.create({
+                data: {
+                    referrerId,
+                    referredId,
+                    reasons: reasons || [],
+                    riskScore: riskScore || 0,
+                    ipMatch: details?.ipMatch || false,
+                    deviceMatch: details?.deviceMatch || false,
+                    userAgentMatch: details?.userAgentMatch || false,
+                    timingAnomaly: details?.timingAnomaly || false,
+                    status: 'PENDING'
+                },
+                include: {
+                    referrer: {
+                        select: { id: true, email: true }
+                    },
+                    referred: {
+                        select: { id: true, email: true }
+                    }
+                }
+            });
+        } catch (error) {
+            console.error('Error creating fraud alert:', error);
+            return null;
+        }
+    }
+
+    // Przypisanie referera z wykrywaniem fraudu - ROZSZERZONE
+    static async assignReferrer(userId, referralCode, registrationIp, deviceData = null, userAgent = null) {
         const settings = await this.getSettings();
 
         if (!settings.referralSystemActive) {
@@ -154,7 +430,7 @@ class ReferralService {
 
         const referrer = await this.validateReferralCode(referralCode);
         if (!referrer) {
-            return { success: false, message: 'Nieprawidłowy kod polecający' };
+            return { success: false, message: 'Nieprawidłowy kod polecający lub zaproszenia wyłączone' };
         }
 
         if (referrer.id === userId) {
@@ -167,45 +443,68 @@ class ReferralService {
             bonusExpires.setDate(bonusExpires.getDate() + settings.referralBonusDuration);
         }
 
-        const registrationIpHash = registrationIp ? this.hashIP(registrationIp) : null;
-        let fraudData = { isFraud: false, reason: null };
+        // Przygotuj dane do fraud check
+        const ipHash = registrationIp ? this.hashIP(registrationIp) : null;
+        const userAgentHash = userAgent ? this.hashUserAgent(userAgent) : null;
+        const deviceFingerprint = deviceData ? this.generateDeviceFingerprint(deviceData) : null;
 
-        if (registrationIpHash) {
-            fraudData = await this.checkFraudulentReferral(referrer.id, registrationIpHash);
-        }
+        // Rozszerzone sprawdzenie fraudu
+        const fraudData = await this.checkFraudulentReferral(referrer.id, {
+            ipHash,
+            userAgentHash,
+            deviceFingerprint,
+            browserLanguage: deviceData?.language,
+            screenResolution: deviceData?.screenResolution,
+            timezone: deviceData?.timezone
+        });
 
+        // Aktualizuj użytkownika
         await prisma.user.update({
             where: { id: userId },
             data: {
                 referredById: referrer.id,
                 referralBonusExpires: bonusExpires,
-                referralIpHash: registrationIpHash,
-                referralFraudFlag: fraudData.isFraud,
-                referralFraudReason: fraudData.reason,
+                referralIpHash: ipHash,
+                deviceFingerprint: deviceFingerprint,
+                userAgentHash: userAgentHash,
+                browserLanguage: deviceData?.language || null,
+                screenResolution: deviceData?.screenResolution || null,
+                timezone: deviceData?.timezone || null,
+                referralFraudFlag: fraudData.isSuspicious,
+                referralFraudReason: fraudData.reasons?.join(', ') || null,
                 referralFraudCheckedAt: new Date()
             }
         });
+
+        // 🆕 Jeśli wykryto fraud, utwórz alert
+        if (fraudData.isSuspicious) {
+            await this.createFraudAlert(referrer.id, userId, fraudData);
+            console.log(`🚨 Fraud alert created: user ${userId}, risk score: ${fraudData.riskScore}`);
+        }
 
         return {
             success: true,
             referrer: referrer,
             bonusExpires: bonusExpires,
-            fraudDetected: fraudData.isFraud,
-            fraudReason: fraudData.reason
+            fraudDetected: fraudData.isSuspicious,
+            fraudReason: fraudData.reasons?.join(', ') || null,
+            riskScore: fraudData.riskScore
         };
     }
 
     // Aktualizuje IP hash polecającego (wywoływane przy logowaniu)
-    static async updateReferrerIpHash(userId, ip) {
+    static async updateReferrerIpHash(userId, ip, userAgent = null) {
         if (!ip) return;
 
         const ipHash = this.hashIP(ip);
+        const userAgentHash = userAgent ? this.hashUserAgent(userAgent) : undefined;
         
+        const updateData = { referralIpHash: ipHash };
+        if (userAgentHash) updateData.userAgentHash = userAgentHash;
+
         await prisma.user.update({
             where: { id: userId },
-            data: {
-                referralIpHash: ipHash
-            }
+            data: updateData
         });
     }
 
@@ -436,8 +735,216 @@ class ReferralService {
 
     // ============ ADMIN METHODS ============
 
-    // Pobiera podejrzane polecenia (fraud alerts)
-    static async getFraudAlerts() {
+    // 🆕 Pobiera alerty fraudu z paginacją i filtrami
+    static async getFraudAlerts(options = {}) {
+        const {
+            status = null,
+            page = 1,
+            limit = 20,
+            sortBy = 'createdAt',
+            sortOrder = 'desc'
+        } = options;
+
+        const where = {};
+        if (status) {
+            where.status = status;
+        }
+
+        const [alerts, total] = await Promise.all([
+            prisma.fraudAlert.findMany({
+                where,
+                include: {
+                    referrer: {
+                        select: {
+                            id: true,
+                            email: true,
+                            referralCode: true,
+                            referralDisabled: true,
+                            isActive: true
+                        }
+                    },
+                    referred: {
+                        select: {
+                            id: true,
+                            email: true,
+                            isActive: true,
+                            createdAt: true
+                        }
+                    }
+                },
+                orderBy: { [sortBy]: sortOrder },
+                skip: (page - 1) * limit,
+                take: limit
+            }),
+            prisma.fraudAlert.count({ where })
+        ]);
+
+        return {
+            alerts,
+            pagination: {
+                page,
+                limit,
+                total,
+                totalPages: Math.ceil(total / limit)
+            }
+        };
+    }
+
+    // 🆕 Statystyki alertów
+    static async getFraudAlertStats() {
+        const [pending, approved, blocked, total] = await Promise.all([
+            prisma.fraudAlert.count({ where: { status: 'PENDING' } }),
+            prisma.fraudAlert.count({ where: { status: 'APPROVED' } }),
+            prisma.fraudAlert.count({
+                where: {
+                    status: {
+                        in: ['BLOCKED_REFERRED', 'BLOCKED_BOTH', 'REFERRAL_DISABLED']
+                    }
+                }
+            }),
+            prisma.fraudAlert.count()
+        ]);
+
+        // Średni risk score dla pending
+        const avgRiskScore = await prisma.fraudAlert.aggregate({
+            where: { status: 'PENDING' },
+            _avg: { riskScore: true }
+        });
+
+        // High risk count
+        const highRisk = await prisma.fraudAlert.count({
+            where: {
+                status: 'PENDING',
+                riskScore: { gte: 70 }
+            }
+        });
+
+        return {
+            pending,
+            approved,
+            blocked,
+            total,
+            highRisk,
+            avgRiskScore: Math.round(avgRiskScore._avg.riskScore || 0)
+        };
+    }
+
+    // 🆕 Rozwiązuje alert (akcja admina)
+    static async resolveAlert(alertId, resolution, adminId, notes = null) {
+        const alert = await prisma.fraudAlert.findUnique({
+            where: { id: alertId },
+            include: {
+                referrer: true,
+                referred: true
+            }
+        });
+
+        if (!alert) {
+            throw new Error('Alert nie znaleziony');
+        }
+
+        if (alert.status !== 'PENDING') {
+            throw new Error('Alert został już rozwiązany');
+        }
+
+        const resolutionDescriptions = {
+            'APPROVED': 'Fałszywy alarm - zezwolono',
+            'BLOCKED_REFERRED': 'Zablokowano konto poleconego',
+            'BLOCKED_BOTH': 'Zablokowano oba konta',
+            'REFERRAL_DISABLED': 'Wyłączono zaproszenia polecającego'
+        };
+
+        // Wykonaj akcję w transakcji
+        return prisma.$transaction(async (tx) => {
+            // Aktualizuj alert
+            const updatedAlert = await tx.fraudAlert.update({
+                where: { id: alertId },
+                data: {
+                    status: resolution,
+                    resolvedAt: new Date(),
+                    resolvedById: adminId,
+                    resolution: resolutionDescriptions[resolution] || resolution,
+                    adminNotes: notes
+                }
+            });
+
+            // Wykonaj akcje na użytkownikach
+            switch (resolution) {
+                case 'APPROVED':
+                    // Fałszywy alarm - usuń flagę fraudu z poleconego
+                    await tx.user.update({
+                        where: { id: alert.referredId },
+                        data: {
+                            referralFraudFlag: false,
+                            referralFraudReason: 'cleared_by_admin'
+                        }
+                    });
+                    break;
+
+                case 'BLOCKED_REFERRED':
+                    // Zablokuj poleconego
+                    await tx.user.update({
+                        where: { id: alert.referredId },
+                        data: {
+                            isActive: false,
+                            referralFraudFlag: true,
+                            referralFraudReason: 'blocked_by_admin'
+                        }
+                    });
+                    break;
+
+                case 'BLOCKED_BOTH':
+                    // Zablokuj obu
+                    await tx.user.update({
+                        where: { id: alert.referredId },
+                        data: {
+                            isActive: false,
+                            referralFraudFlag: true,
+                            referralFraudReason: 'blocked_by_admin'
+                        }
+                    });
+                    await tx.user.update({
+                        where: { id: alert.referrerId },
+                        data: {
+                            isActive: false,
+                            referralDisabled: true,
+                            referralDisabledAt: new Date(),
+                            referralDisabledReason: 'blocked_by_admin_fraud'
+                        }
+                    });
+                    break;
+
+                case 'REFERRAL_DISABLED':
+                    // Wyłącz tylko zaproszenia polecającego
+                    await tx.user.update({
+                        where: { id: alert.referrerId },
+                        data: {
+                            referralDisabled: true,
+                            referralDisabledAt: new Date(),
+                            referralDisabledReason: 'disabled_by_admin_fraud_suspicion'
+                        }
+                    });
+                    break;
+            }
+
+            return updatedAlert;
+        });
+    }
+
+    // 🆕 Włącza/wyłącza zaproszenia użytkownika
+    static async toggleReferralStatus(userId, disabled, reason = null) {
+        return prisma.user.update({
+            where: { id: userId },
+            data: {
+                referralDisabled: disabled,
+                referralDisabledAt: disabled ? new Date() : null,
+                referralDisabledReason: disabled ? reason : null
+            }
+        });
+    }
+
+    // Pobiera podejrzane polecenia (fraud alerts) - STARA WERSJA dla kompatybilności
+    static async getFraudAlertsLegacy() {
         const fraudulentReferrals = await prisma.user.findMany({
             where: {
                 referralFraudFlag: true,
@@ -479,8 +986,8 @@ class ReferralService {
         return alertsWithCommissions;
     }
 
-    // Oznacz referral jako sprawdzony
-    static async resolveFraudAlert(userId, action) {
+    // Oznacz referral jako sprawdzony - STARA WERSJA dla kompatybilności
+    static async resolveFraudAlertLegacy(userId, action) {
         if (action === 'dismiss') {
             await prisma.user.update({
                 where: { id: userId },
@@ -534,6 +1041,7 @@ class ReferralService {
             commissionsSum,
             activeReferrers,
             fraudAlerts,
+            fraudAlertStats,
             topReferrers,
             recentReferrals,
             settings
@@ -556,6 +1064,7 @@ class ReferralService {
                     referredById: { not: null }
                 }
             }),
+            this.getFraudAlertStats(),
             prisma.user.findMany({
                 where: {
                     referralEarnings: { gt: 0 }
@@ -565,6 +1074,7 @@ class ReferralService {
                     email: true,
                     referralCode: true,
                     referralEarnings: true,
+                    referralDisabled: true,
                     _count: {
                         select: { referrals: true }
                     }
@@ -595,14 +1105,19 @@ class ReferralService {
                 totalCommissions,
                 totalCommissionsAmount: parseFloat(commissionsSum._sum.amount || 0),
                 activeReferrers,
-                fraudAlerts
+                fraudAlerts,
+                // 🆕 Nowe statystyki alertów
+                pendingFraudAlerts: fraudAlertStats.pending,
+                highRiskAlerts: fraudAlertStats.highRisk
             },
+            fraudAlertStats,
             topReferrers: topReferrers.map(u => ({
                 id: u.id,
                 email: u.email,
                 referralCode: u.referralCode,
                 earnings: parseFloat(u.referralEarnings),
-                referralsCount: u._count.referrals
+                referralsCount: u._count.referrals,
+                referralDisabled: u.referralDisabled
             })),
             recentReferrals: recentReferrals.map(u => ({
                 id: u.id,
@@ -670,7 +1185,7 @@ class ReferralService {
                 where,
                 include: {
                     referredBy: {
-                        select: { id: true, email: true, referralCode: true }
+                        select: { id: true, email: true, referralCode: true, referralDisabled: true }
                     }
                 },
                 orderBy: { createdAt: 'desc' },
@@ -699,7 +1214,8 @@ class ReferralService {
                     referredBy: {
                         id: user.referredBy.id,
                         email: user.referredBy.email,
-                        code: user.referredBy.referralCode
+                        code: user.referredBy.referralCode,
+                        referralDisabled: user.referredBy.referralDisabled
                     },
                     totalCommissionGenerated: parseFloat(commissions._sum.amount || 0)
                 };

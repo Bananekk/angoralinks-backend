@@ -26,7 +26,7 @@ model User {
   registrationIp       String?        @map("registration_ip")
   pendingBalance       Decimal?       @default(0) @map("pending_balance") @db.Decimal(10, 6)
   
-   // ========== POLA REFERALI ==========
+  // ========== POLA REFERALI ==========
   referralCode          String?   @unique @map("referral_code")
   referralEarnings      Decimal   @default(0) @map("referral_earnings") @db.Decimal(10, 4)
   referredById          String?   @map("referred_by_id")
@@ -34,10 +34,21 @@ model User {
   referrals             User[]    @relation("Referrals")
   referralBonusExpires  DateTime? @map("referral_bonus_expires")
   
-  // 🆕 NOWE POLA - wykrywanie fraudu referali
-  referralIpHash        String?   @map("referral_ip_hash") @db.VarChar(64)
-  referralFraudFlag     Boolean   @default(false) @map("referral_fraud_flag")
-  referralFraudReason   String?   @map("referral_fraud_reason") @db.VarChar(255)
+  // 🆕 NOWE POLE - wyłączenie zaproszeń
+  referralDisabled       Boolean   @default(false) @map("referral_disabled")
+  referralDisabledAt     DateTime? @map("referral_disabled_at")
+  referralDisabledReason String?   @map("referral_disabled_reason") @db.VarChar(255)
+  
+  // Pola wykrywania fraudu - ROZSZERZONE
+  referralIpHash         String?   @map("referral_ip_hash") @db.VarChar(64)
+  deviceFingerprint      String?   @map("device_fingerprint") @db.VarChar(64)
+  userAgentHash          String?   @map("user_agent_hash") @db.VarChar(64)
+  browserLanguage        String?   @map("browser_language") @db.VarChar(10)
+  screenResolution       String?   @map("screen_resolution") @db.VarChar(20)
+  timezone               String?   @map("timezone") @db.VarChar(50)
+  
+  referralFraudFlag      Boolean   @default(false) @map("referral_fraud_flag")
+  referralFraudReason    String?   @map("referral_fraud_reason") @db.VarChar(255)
   referralFraudCheckedAt DateTime? @map("referral_fraud_checked_at")
   
   // ========== RELACJE ==========
@@ -47,9 +58,54 @@ model User {
   payouts              Payout[]
   referralCommissions  ReferralCommission[] @relation("ReferrerCommissions")
   generatedCommissions ReferralCommission[] @relation("ReferredCommissions")
+  
+  // 🆕 Relacje do alertów fraudu
+  fraudAlertsAsReferrer FraudAlert[] @relation("FraudAlertReferrer")
+  fraudAlertsAsReferred FraudAlert[] @relation("FraudAlertReferred")
 
   @@index([referredById])
   @@map("users")
+}
+
+// 🆕 NOWY MODEL - Alerty fraudu
+model FraudAlert {
+  id              String           @id @default(cuid())
+  createdAt       DateTime         @default(now()) @map("created_at")
+  
+  // Relacje
+  referrerId      String           @map("referrer_id")
+  referrer        User             @relation("FraudAlertReferrer", fields: [referrerId], references: [id], onDelete: Cascade)
+  referredId      String           @map("referred_id")
+  referred        User             @relation("FraudAlertReferred", fields: [referredId], references: [id], onDelete: Cascade)
+  
+  // Szczegóły wykrycia
+  reasons         String[]         @default([])
+  riskScore       Int              @default(0) @map("risk_score")
+  ipMatch         Boolean          @default(false) @map("ip_match")
+  deviceMatch     Boolean          @default(false) @map("device_match")
+  userAgentMatch  Boolean          @default(false) @map("user_agent_match")
+  timingAnomaly   Boolean          @default(false) @map("timing_anomaly")
+  
+  // Status i rozwiązanie
+  status          FraudAlertStatus @default(PENDING)
+  resolvedAt      DateTime?        @map("resolved_at")
+  resolvedById    String?          @map("resolved_by_id")
+  resolution      String?          @db.VarChar(255)
+  adminNotes      String?          @map("admin_notes") @db.Text
+
+  @@index([status])
+  @@index([createdAt])
+  @@index([referrerId])
+  @@index([referredId])
+  @@map("fraud_alerts")
+}
+
+enum FraudAlertStatus {
+  PENDING
+  APPROVED
+  BLOCKED_REFERRED
+  BLOCKED_BOTH
+  REFERRAL_DISABLED
 }
 
 model Link {
@@ -177,6 +233,7 @@ model Payout {
   status      PayoutStatus @default(PENDING)
   createdAt   DateTime     @default(now()) @map("created_at")
   processedAt DateTime?    @map("processed_at")
+  adminNote   String?      @map("admin_note") @db.VarChar(500)
   user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
@@ -235,7 +292,7 @@ model IpLog {
   @@map("ip_logs")
 }
 
-// ========== NOWE MODELE DLA SYSTEMU REFERALI ==========
+// ========== MODELE DLA SYSTEMU REFERALI ==========
 
 model ReferralCommission {
   id              String    @id @default(cuid())

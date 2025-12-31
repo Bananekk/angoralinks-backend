@@ -4,6 +4,7 @@ const express = require('express');
 const { PrismaClient } = require('@prisma/client');
 const { auth, isAdmin } = require('../middleware/auth');
 const emailUtils = require('../utils/email');
+const ReferralService = require('../services/referralService');
 
 // =====================
 // BEZPIECZNE IMPORTY
@@ -1592,6 +1593,230 @@ router.get('/cpm-rates/history', async (req, res) => {
     } catch (error) {
         console.error('Błąd historii CPM:', error);
         res.status(500).json({ success: false, message: 'Błąd serwera' });
+    }
+});
+
+// ======================
+// 🆕 FRAUD ALERTS - NOWE ENDPOINTY
+// ======================
+
+// Pobierz listę alertów fraudu
+router.get('/fraud-alerts', async (req, res) => {
+    try {
+        const {
+            status,
+            page = 1,
+            limit = 20,
+            sortBy = 'createdAt',
+            sortOrder = 'desc'
+        } = req.query;
+
+        const result = await ReferralService.getFraudAlerts({
+            status: status || null,
+            page: parseInt(page),
+            limit: parseInt(limit),
+            sortBy,
+            sortOrder
+        });
+
+        res.json({
+            success: true,
+            data: result
+        });
+
+    } catch (error) {
+        console.error('Get fraud alerts error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Błąd pobierania alertów'
+        });
+    }
+});
+
+// Statystyki alertów fraudu
+router.get('/fraud-alerts/stats', async (req, res) => {
+    try {
+        const stats = await ReferralService.getFraudAlertStats();
+
+        res.json({
+            success: true,
+            data: stats
+        });
+
+    } catch (error) {
+        console.error('Get fraud stats error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Błąd pobierania statystyk'
+        });
+    }
+});
+
+// Szczegóły pojedynczego alertu
+router.get('/fraud-alerts/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const alert = await prisma.fraudAlert.findUnique({
+            where: { id },
+            include: {
+                referrer: {
+                    select: {
+                        id: true,
+                        email: true,
+                        referralCode: true,
+                        referralDisabled: true,
+                        isActive: true,
+                        createdAt: true,
+                        referrals: {
+                            select: {
+                                id: true,
+                                email: true,
+                                createdAt: true,
+                                referralFraudFlag: true
+                            },
+                            take: 10,
+                            orderBy: { createdAt: 'desc' }
+                        }
+                    }
+                },
+                referred: {
+                    select: {
+                        id: true,
+                        email: true,
+                        isActive: true,
+                        createdAt: true,
+                        referralFraudFlag: true,
+                        referralFraudReason: true
+                    }
+                }
+            }
+        });
+
+        if (!alert) {
+            return res.status(404).json({
+                success: false,
+                message: 'Alert nie znaleziony'
+            });
+        }
+
+        res.json({
+            success: true,
+            data: alert
+        });
+
+    } catch (error) {
+        console.error('Get fraud alert error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Błąd pobierania alertu'
+        });
+    }
+});
+
+// Rozwiąż alert (akcja admina)
+router.post('/fraud-alerts/:id/resolve', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { resolution, notes } = req.body;
+
+        const validResolutions = [
+            'APPROVED',
+            'BLOCKED_REFERRED',
+            'BLOCKED_BOTH',
+            'REFERRAL_DISABLED'
+        ];
+
+        if (!validResolutions.includes(resolution)) {
+            return res.status(400).json({
+                success: false,
+                message: `Nieprawidłowa akcja. Dozwolone: ${validResolutions.join(', ')}`
+            });
+        }
+
+        const updatedAlert = await ReferralService.resolveAlert(
+            id,
+            resolution,
+            req.userId,
+            notes
+        );
+
+        res.json({
+            success: true,
+            message: 'Alert został rozwiązany',
+            data: updatedAlert
+        });
+
+    } catch (error) {
+        console.error('Resolve alert error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Błąd rozwiązywania alertu'
+        });
+    }
+});
+
+// Włącz/wyłącz zaproszenia użytkownika
+router.post('/users/:id/toggle-referral', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { disabled, reason } = req.body;
+
+        const user = await prisma.user.findUnique({
+            where: { id },
+            select: { id: true, email: true, referralDisabled: true }
+        });
+
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: 'Użytkownik nie znaleziony'
+            });
+        }
+
+        const updatedUser = await ReferralService.toggleReferralStatus(
+            id,
+            disabled,
+            reason
+        );
+
+        res.json({
+            success: true,
+            message: disabled
+                ? 'Zaproszenia zostały wyłączone'
+                : 'Zaproszenia zostały włączone',
+            data: {
+                id: updatedUser.id,
+                email: updatedUser.email,
+                referralDisabled: updatedUser.referralDisabled
+            }
+        });
+
+    } catch (error) {
+        console.error('Toggle referral error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Błąd zmiany statusu zaproszeń'
+        });
+    }
+});
+
+// Rozszerzone statystyki referali
+router.get('/referral-stats', async (req, res) => {
+    try {
+        const stats = await ReferralService.getAdminStats();
+        
+        res.json({
+            success: true,
+            data: stats
+        });
+
+    } catch (error) {
+        console.error('Get referral stats error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Błąd pobierania statystyk'
+        });
     }
 });
 

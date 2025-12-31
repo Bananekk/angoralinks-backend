@@ -40,16 +40,24 @@ function generateVerificationCode() {
 }
 
 // =====================================
-// POST /api/auth/register - Rejestracja Z OBSŁUGĄ REFERRALI
+// POST /api/auth/register - Rejestracja Z ROZSZERZONYM FRAUD DETECTION
 // =====================================
 router.post('/register', async (req, res) => {
     try {
-        const { email, password, confirmPassword, referralCode } = req.body;
+        const { 
+            email, 
+            password, 
+            confirmPassword, 
+            referralCode,
+            // 🆕 Dane fingerprint z frontendu
+            deviceData 
+        } = req.body;
         
         console.log('========================================');
         console.log('📝 REGISTRATION STARTED');
         console.log('📝 Email:', email);
         console.log('📝 Received referralCode:', referralCode || 'NONE');
+        console.log('📝 DeviceData received:', deviceData ? 'YES' : 'NO');
         console.log('========================================');
         
         if (!email || !password) {
@@ -87,13 +95,11 @@ router.post('/register', async (req, res) => {
         const userAgent = getUserAgent(req);
         
         // ========================================
-        // OBSŁUGA KODU POLECAJĄCEGO
+        // 🆕 ROZSZERZONE PRZYGOTOWANIE DANYCH FINGERPRINT
         // ========================================
-        let referrerId = null;
-        let referrerData = null;
-        let bonusExpires = null;
         let ipHash = null;
-        let fraudData = { isFraud: false, reason: null };
+        let userAgentHash = null;
+        let deviceFingerprint = null;
 
         // Hash IP
         try {
@@ -104,6 +110,34 @@ router.post('/register', async (req, res) => {
         } catch (hashError) {
             console.error('❌ Error hashing IP:', hashError.message);
         }
+
+        // 🆕 Hash User-Agent
+        try {
+            if (userAgent && userAgent !== 'unknown') {
+                userAgentHash = ReferralService.hashUserAgent(userAgent);
+                console.log('✅ User-Agent hashed successfully');
+            }
+        } catch (hashError) {
+            console.error('❌ Error hashing User-Agent:', hashError.message);
+        }
+
+        // 🆕 Generuj Device Fingerprint
+        try {
+            if (deviceData) {
+                deviceFingerprint = ReferralService.generateDeviceFingerprint(deviceData);
+                console.log('✅ Device fingerprint generated:', deviceFingerprint ? 'YES' : 'NO');
+            }
+        } catch (fpError) {
+            console.error('❌ Error generating fingerprint:', fpError.message);
+        }
+
+        // ========================================
+        // OBSŁUGA KODU POLECAJĄCEGO Z ROZSZERZONYM FRAUD DETECTION
+        // ========================================
+        let referrerId = null;
+        let referrerData = null;
+        let bonusExpires = null;
+        let fraudData = { isSuspicious: false, riskScore: 0, reasons: [], details: {} };
 
         // Waliduj kod polecający
         if (referralCode && referralCode.trim() !== '') {
@@ -117,7 +151,8 @@ router.post('/register', async (req, res) => {
                     referrerId = referrerData.id;
                     console.log('✅ Referrer FOUND:', {
                         id: referrerData.id,
-                        email: referrerData.email
+                        email: referrerData.email,
+                        referralDisabled: referrerData.referralDisabled
                     });
 
                     // Pobierz ustawienia bonusu
@@ -132,17 +167,26 @@ router.post('/register', async (req, res) => {
                         console.error('❌ Error getting settings:', settingsError.message);
                     }
 
-                    // Sprawdź fraud
-                    if (ipHash) {
-                        try {
-                            fraudData = await ReferralService.checkFraudulentReferral(referrerId, ipHash);
-                            console.log('📝 Fraud check result:', fraudData);
-                        } catch (fraudError) {
-                            console.error('❌ Error checking fraud:', fraudError.message);
-                        }
+                    // 🆕 ROZSZERZONE sprawdzenie fraudu
+                    try {
+                        fraudData = await ReferralService.checkFraudulentReferral(referrerId, {
+                            ipHash,
+                            userAgentHash,
+                            deviceFingerprint,
+                            browserLanguage: deviceData?.language,
+                            screenResolution: deviceData?.screenResolution,
+                            timezone: deviceData?.timezone
+                        });
+                        console.log('📝 Fraud check result:', {
+                            isSuspicious: fraudData.isSuspicious,
+                            riskScore: fraudData.riskScore,
+                            reasons: fraudData.reasons
+                        });
+                    } catch (fraudError) {
+                        console.error('❌ Error checking fraud:', fraudError.message);
                     }
                 } else {
-                    console.log('⚠️ Referral code NOT FOUND:', cleanCode);
+                    console.log('⚠️ Referral code NOT FOUND or DISABLED:', cleanCode);
                 }
             } catch (refError) {
                 console.error('❌ Error validating referral code:', refError.message);
@@ -173,14 +217,15 @@ router.post('/register', async (req, res) => {
         }
 
         // ========================================
-        // TWORZENIE UŻYTKOWNIKA
+        // TWORZENIE UŻYTKOWNIKA Z ROZSZERZONYMI DANYMI
         // ========================================
         const encryptedIp = encrypt(clientIp);
 
         console.log('📝 Creating user with:');
         console.log('   - referralCode:', userReferralCode);
         console.log('   - referredById:', referrerId);
-        console.log('   - referralFraudFlag:', fraudData.isFraud);
+        console.log('   - referralFraudFlag:', fraudData.isSuspicious);
+        console.log('   - riskScore:', fraudData.riskScore);
         
         const user = await prisma.user.create({
             data: {
@@ -195,9 +240,16 @@ router.post('/register', async (req, res) => {
                 referralCode: userReferralCode,
                 referredById: referrerId,
                 referralBonusExpires: bonusExpires,
+                // 🆕 ROZSZERZONE POLA FINGERPRINT
                 referralIpHash: ipHash,
-                referralFraudFlag: fraudData.isFraud,
-                referralFraudReason: fraudData.reason || null,
+                deviceFingerprint: deviceFingerprint,
+                userAgentHash: userAgentHash,
+                browserLanguage: deviceData?.language || null,
+                screenResolution: deviceData?.screenResolution || null,
+                timezone: deviceData?.timezone || null,
+                // FLAGI FRAUDU
+                referralFraudFlag: fraudData.isSuspicious,
+                referralFraudReason: fraudData.reasons?.length > 0 ? fraudData.reasons.join(', ') : null,
                 referralFraudCheckedAt: referrerId ? new Date() : null
             }
         });
@@ -205,6 +257,17 @@ router.post('/register', async (req, res) => {
         console.log('✅ User created:', user.id);
         console.log('   - referralCode:', user.referralCode);
         console.log('   - referredById:', user.referredById);
+        console.log('   - referralFraudFlag:', user.referralFraudFlag);
+
+        // 🆕 Utwórz alert fraudu jeśli wykryto podejrzenie
+        if (fraudData.isSuspicious && referrerId) {
+            try {
+                await ReferralService.createFraudAlert(referrerId, user.id, fraudData);
+                console.log('🚨 Fraud alert created for user:', user.id);
+            } catch (alertError) {
+                console.error('❌ Error creating fraud alert:', alertError.message);
+            }
+        }
         
         // Zapisz log IP
         try {
@@ -297,12 +360,14 @@ router.post('/login', async (req, res) => {
         const userAgent = getUserAgent(req);
         const encryptedIp = encrypt(clientIp);
 
-        // Hash IP dla referrali
+        // 🆕 Hash IP i User-Agent dla referrali
         let ipHash = null;
+        let userAgentHash = null;
         try {
             ipHash = ReferralService.hashIP(clientIp);
+            userAgentHash = ReferralService.hashUserAgent(userAgent);
         } catch (e) {
-            console.error('Error hashing login IP:', e.message);
+            console.error('Error hashing login data:', e.message);
         }
         
         // Aktualizuj ostatnie logowanie
@@ -311,7 +376,8 @@ router.post('/login', async (req, res) => {
             data: {
                 lastLoginIp: encryptedIp,
                 lastLoginAt: new Date(),
-                referralIpHash: ipHash
+                referralIpHash: ipHash,
+                userAgentHash: userAgentHash || undefined
             }
         });
         
