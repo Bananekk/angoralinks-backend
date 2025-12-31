@@ -7,6 +7,31 @@ const crypto = require('crypto');
 
 const prisma = new PrismaClient();
 
+// Na początku pliku authRoutes.js, po importach, dodaj:
+
+// TYMCZASOWY TEST - usuń po debugowaniu
+router.post('/test-referral', async (req, res) => {
+    const { referralCode } = req.body;
+    const ReferralService = require('../services/referralService');
+    
+    console.log('🧪 TEST: Received referralCode:', referralCode);
+    
+    try {
+        const referrer = await ReferralService.validateReferralCode(referralCode);
+        console.log('🧪 TEST: Referrer found:', referrer ? referrer.id : 'NONE');
+        
+        res.json({
+            received: referralCode,
+            found: !!referrer,
+            referrerId: referrer?.id || null,
+            referrerEmail: referrer?.email || null
+        });
+    } catch (error) {
+        console.error('🧪 TEST ERROR:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Helper do pobierania IP
 const getClientIp = (req) => {
     return req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
