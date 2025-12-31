@@ -484,6 +484,10 @@ router.get('/users', async (req, res) => {
                     isVerified: true,
                     createdAt: true,
                     lastLoginAt: true,
+                    referralDisabled: true,           // 🆕
+                    referralDisabledAt: true,         // 🆕
+                    referralDisabledReason: true,     // 🆕
+                    referralEarnings: true,           // 🆕
                     _count: {
                         select: { 
                             links: true,
@@ -1816,6 +1820,53 @@ router.get('/referral-stats', async (req, res) => {
         res.status(500).json({
             success: false,
             message: 'Błąd pobierania statystyk'
+        });
+    }
+});
+
+// Wyłącz polecenia i wyzeruj zarobki użytkownika
+router.post('/users/:id/disable-referral-reset-earnings', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const user = await prisma.user.findUnique({
+            where: { id },
+            select: { id: true, email: true, referralEarnings: true }
+        });
+
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: 'Użytkownik nie znaleziony'
+            });
+        }
+
+        // Wyłącz polecenia i wyzeruj zarobki z poleceń
+        await prisma.user.update({
+            where: { id },
+            data: {
+                referralDisabled: true,
+                referralDisabledAt: new Date(),
+                referralDisabledReason: 'Wyłączone przez admina - zarobki wyzerowane',
+                referralEarnings: 0
+            }
+        });
+
+        res.json({
+            success: true,
+            message: 'Polecenia wyłączone i zarobki wyzerowane',
+            data: {
+                id: user.id,
+                email: user.email,
+                previousEarnings: parseFloat(user.referralEarnings || 0)
+            }
+        });
+
+    } catch (error) {
+        console.error('Disable referral and reset earnings error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Błąd operacji'
         });
     }
 });
