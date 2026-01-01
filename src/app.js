@@ -1,10 +1,24 @@
 // app.js
+console.log('🔧 Starting app.js...');
+
+process.on('uncaughtException', (err) => {
+    console.error('❌ UNCAUGHT EXCEPTION:', err);
+    process.exit(1);
+});
+
+process.on('unhandledRejection', (err) => {
+    console.error('❌ UNHANDLED REJECTION:', err);
+    process.exit(1);
+});
+
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 require('dotenv').config();
+
+console.log('✅ Core modules loaded');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -41,22 +55,99 @@ app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
+console.log('✅ Middleware configured');
+
 // ======================
-// ROUTES
+// ROUTES - BEZPIECZNE IMPORTY
 // ======================
 
-const authRoutes = require('./routes/authRoutes');
-const linkRoutes = require('./routes/linkRoutes');
-const redirectRoutes = require('./routes/redirectRoutes');
-const statsRoutes = require('./routes/statsRoutes');
-const adminRoutes = require('./routes/adminRoutes');
-const profileRoutes = require('./routes/profileRoutes');
-const payoutRoutes = require('./routes/payoutRoutes');
-const contactRoutes = require('./routes/contactRoutes');
-const cpmRoutes = require('./routes/cpmRoutes');
-const securityRoutes = require('./routes/securityRoutes');
-const referralRoutes = require('./routes/referralRoutes');
-const twoFactorRoutes = require('./routes/twoFactorRoutes'); // 🆕 2FA
+let authRoutes, linkRoutes, redirectRoutes, statsRoutes, adminRoutes;
+let profileRoutes, payoutRoutes, contactRoutes, cpmRoutes, securityRoutes;
+let referralRoutes, twoFactorRoutes;
+
+try {
+    authRoutes = require('./routes/authRoutes');
+    console.log('✅ authRoutes loaded');
+} catch (e) {
+    console.error('❌ authRoutes error:', e.message);
+}
+
+try {
+    linkRoutes = require('./routes/linkRoutes');
+    console.log('✅ linkRoutes loaded');
+} catch (e) {
+    console.error('❌ linkRoutes error:', e.message);
+}
+
+try {
+    redirectRoutes = require('./routes/redirectRoutes');
+    console.log('✅ redirectRoutes loaded');
+} catch (e) {
+    console.error('❌ redirectRoutes error:', e.message);
+}
+
+try {
+    statsRoutes = require('./routes/statsRoutes');
+    console.log('✅ statsRoutes loaded');
+} catch (e) {
+    console.error('❌ statsRoutes error:', e.message);
+}
+
+try {
+    adminRoutes = require('./routes/adminRoutes');
+    console.log('✅ adminRoutes loaded');
+} catch (e) {
+    console.error('❌ adminRoutes error:', e.message);
+}
+
+try {
+    profileRoutes = require('./routes/profileRoutes');
+    console.log('✅ profileRoutes loaded');
+} catch (e) {
+    console.error('❌ profileRoutes error:', e.message);
+}
+
+try {
+    payoutRoutes = require('./routes/payoutRoutes');
+    console.log('✅ payoutRoutes loaded');
+} catch (e) {
+    console.error('❌ payoutRoutes error:', e.message);
+}
+
+try {
+    contactRoutes = require('./routes/contactRoutes');
+    console.log('✅ contactRoutes loaded');
+} catch (e) {
+    console.error('❌ contactRoutes error:', e.message);
+}
+
+try {
+    cpmRoutes = require('./routes/cpmRoutes');
+    console.log('✅ cpmRoutes loaded');
+} catch (e) {
+    console.error('❌ cpmRoutes error:', e.message);
+}
+
+try {
+    securityRoutes = require('./routes/securityRoutes');
+    console.log('✅ securityRoutes loaded');
+} catch (e) {
+    console.error('❌ securityRoutes error:', e.message);
+}
+
+try {
+    referralRoutes = require('./routes/referralRoutes');
+    console.log('✅ referralRoutes loaded');
+} catch (e) {
+    console.error('❌ referralRoutes error:', e.message);
+}
+
+try {
+    twoFactorRoutes = require('./routes/twoFactorRoutes');
+    console.log('✅ twoFactorRoutes loaded');
+} catch (e) {
+    console.error('❌ twoFactorRoutes error:', e.message);
+}
 
 // Health check
 app.get('/health', (req, res) => {
@@ -65,7 +156,7 @@ app.get('/health', (req, res) => {
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
         database: 'PostgreSQL (Supabase)',
-        version: '1.4.0'  // 🆕 Bump wersji
+        version: '1.4.0'
     });
 });
 
@@ -82,25 +173,27 @@ app.get('/api', (req, res) => {
             payouts: '/api/payouts/*',
             cpm: '/api/cpm/*',
             referrals: '/api/referrals/*',
-            twoFactor: '/api/2fa/*',  // 🆕 NOWE
+            twoFactor: '/api/2fa/*',
             security: '/api/admin/security/*'
         }
     });
 });
 
-// Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/links', linkRoutes);
-app.use('/l', redirectRoutes);
-app.use('/api/stats', statsRoutes);
-app.use('/api/admin', adminRoutes);
-app.use('/api/profile', profileRoutes);
-app.use('/api/payouts', payoutRoutes);
-app.use('/api/contact', contactRoutes);
-app.use('/api/cpm', cpmRoutes);
-app.use('/api/admin/security', securityRoutes);
-app.use('/api/referrals', referralRoutes);
-app.use('/api/2fa', twoFactorRoutes); // 🆕 2FA
+// Routes - bezpieczne montowanie
+if (authRoutes) app.use('/api/auth', authRoutes);
+if (linkRoutes) app.use('/api/links', linkRoutes);
+if (redirectRoutes) app.use('/l', redirectRoutes);
+if (statsRoutes) app.use('/api/stats', statsRoutes);
+if (adminRoutes) app.use('/api/admin', adminRoutes);
+if (profileRoutes) app.use('/api/profile', profileRoutes);
+if (payoutRoutes) app.use('/api/payouts', payoutRoutes);
+if (contactRoutes) app.use('/api/contact', contactRoutes);
+if (cpmRoutes) app.use('/api/cpm', cpmRoutes);
+if (securityRoutes) app.use('/api/admin/security', securityRoutes);
+if (referralRoutes) app.use('/api/referrals', referralRoutes);
+if (twoFactorRoutes) app.use('/api/2fa', twoFactorRoutes);
+
+console.log('✅ Routes mounted');
 
 // ======================
 // OBSŁUGA BŁĘDÓW
@@ -130,16 +223,15 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3000;
 
 console.log('🔧 Przygotowanie do uruchomienia...');
-console.log(`📍 PORT z env: ${process.env.PORT}`);
-console.log(`📍 Używany PORT: ${PORT}`);
+console.log(`📍 PORT: ${PORT}`);
+console.log(`🔐 2FA Key: ${process.env.TWO_FACTOR_ENCRYPTION_KEY ? 'SET' : 'MISSING!'}`);
+console.log(`📧 Resend: ${process.env.RESEND_API_KEY ? 'SET' : 'MISSING!'}`);
 
 const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('====================================');
     console.log('🚀 AngoraLinks API uruchomiony!');
     console.log(`📍 Port: ${PORT}`);
-    console.log(`📍 Host: 0.0.0.0`);
     console.log(`📍 Wersja: 1.4.0`);
-    console.log(`🔐 2FA: ${process.env.TWO_FACTOR_ENCRYPTION_KEY ? 'Skonfigurowane' : 'BRAK KLUCZA!'}`);
     console.log('====================================');
 });
 
