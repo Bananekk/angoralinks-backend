@@ -1090,6 +1090,210 @@ router.post('/users/:id/2fa/force', async (req, res) => {
     }
 });
 
+// Wymuś 2FA dla użytkownika - /users/:id/2fa/force
+router.post('/users/:id/2fa/force', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const adminId = req.userId;
+
+        const user = await prisma.user.findUnique({
+            where: { id },
+            select: {
+                email: true,
+                twoFactorEnabled: true,
+                twoFactorRequired: true,
+                isActive: true
+            }
+        });
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'Użytkownik nie znaleziony' });
+        }
+
+        if (user.twoFactorEnabled) {
+            return res.status(400).json({ success: false, message: 'Użytkownik ma już włączone 2FA' });
+        }
+
+        if (user.twoFactorRequired) {
+            return res.status(400).json({ success: false, message: '2FA jest już wymagane dla tego użytkownika' });
+        }
+
+        await prisma.user.update({
+            where: { id },
+            data: {
+                twoFactorRequired: true,
+                twoFactorRequiredAt: new Date(),
+                twoFactorRequiredBy: adminId
+            }
+        });
+
+        // Wyślij email informacyjny
+        try {
+            await emailUtils.sendTwoFactorRequired(user.email);
+        } catch (emailError) {
+            console.error('Błąd wysyłania emaila:', emailError);
+        }
+
+        // Zapisz log
+        try {
+            await prisma.twoFactorLog.create({
+                data: {
+                    userId: id,
+                    action: 'ADMIN_FORCED',
+                    success: true,
+                    ipAddress: req.ip
+                }
+            });
+        } catch (logError) {
+            console.error('Błąd zapisywania logu:', logError);
+        }
+
+        res.json({ 
+            success: true,
+            message: '2FA zostało wymuszone dla użytkownika' 
+        });
+
+    } catch (error) {
+        console.error('Błąd wymuszania 2FA:', error);
+        res.status(500).json({ success: false, message: 'Błąd serwera' });
+    }
+});
+
+// Usuń wymóg 2FA - /users/:id/2fa/remove-force
+router.post('/users/:id/2fa/remove-force', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const user = await prisma.user.findUnique({
+            where: { id },
+            select: { 
+                email: true,
+                twoFactorRequired: true 
+            }
+        });
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'Użytkownik nie znaleziony' });
+        }
+
+        if (!user.twoFactorRequired) {
+            return res.status(400).json({ success: false, message: '2FA nie jest wymagane dla tego użytkownika' });
+        }
+
+        await prisma.user.update({
+            where: { id },
+            data: {
+                twoFactorRequired: false,
+                twoFactorRequiredAt: null,
+                twoFactorRequiredBy: null
+            }
+        });
+
+        // Zapisz log
+        try {
+            await prisma.twoFactorLog.create({
+                data: {
+                    userId: id,
+                    action: 'ADMIN_REMOVED_FORCE',
+                    success: true,
+                    ipAddress: req.ip
+                }
+            });
+        } catch (logError) {
+            console.error('Błąd zapisywania logu:', logError);
+        }
+
+        res.json({ 
+            success: true,
+            message: 'Wymóg 2FA został usunięty' 
+        });
+
+    } catch (error) {
+        console.error('Błąd usuwania wymogu 2FA:', error);
+        res.status(500).json({ success: false, message: 'Błąd serwera' });
+    }
+});
+
+// Resetuj 2FA użytkownika - /users/:id/2fa/reset
+router.post('/users/:id/2fa/reset', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const adminId = req.userId;
+
+        const user = await prisma.user.findUnique({
+            where: { id },
+            select: {
+                email: true,
+                twoFactorEnabled: true
+            }
+        });
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'Użytkownik nie znaleziony' });
+        }
+
+        if (!user.twoFactorEnabled) {
+            return res.status(400).json({ success: false, message: 'Użytkownik nie ma włączonego 2FA' });
+        }
+
+        // Usuń wszystkie dane 2FA
+        const deleteOperations = [];
+        
+        try {
+            deleteOperations.push(prisma.webAuthnCredential.deleteMany({ where: { userId: id } }));
+        } catch (e) {}
+        
+        try {
+            deleteOperations.push(prisma.backupCode.deleteMany({ where: { userId: id } }));
+        } catch (e) {}
+
+        deleteOperations.push(
+            prisma.user.update({
+                where: { id },
+                data: {
+                    twoFactorEnabled: false,
+                    twoFactorSecret: null,
+                    twoFactorMethod: [],
+                    twoFactorEnabledAt: null,
+                    twoFactorLastUsedAt: null
+                }
+            })
+        );
+
+        await prisma.$transaction(deleteOperations);
+
+        // Zapisz log
+        try {
+            await prisma.twoFactorLog.create({
+                data: {
+                    userId: id,
+                    action: 'ADMIN_RESET',
+                    success: true,
+                    ipAddress: req.ip
+                }
+            });
+        } catch (logError) {
+            console.error('Błąd zapisywania logu:', logError);
+        }
+
+        // Wyślij email
+        try {
+            await emailUtils.sendTwoFactorReset(user.email);
+        } catch (emailError) {
+            console.error('Błąd wysyłania emaila:', emailError);
+        }
+
+        res.json({ 
+            success: true,
+            message: '2FA użytkownika zostało zresetowane' 
+        });
+
+    } catch (error) {
+        console.error('Błąd resetowania 2FA:', error);
+        res.status(500).json({ success: false, message: 'Błąd serwera' });
+    }
+});
+
 // 🆕 Alias dla kompatybilności z frontendem - /users/:id/2fa/recommend
 router.post('/users/:id/2fa/recommend', async (req, res) => {
     try {
