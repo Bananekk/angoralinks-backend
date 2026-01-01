@@ -3,12 +3,23 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { PrismaClient } = require('@prisma/client');
-const { sendVerificationEmail, sendWelcomeEmail } = require('../utils/email');
+const { sendVerificationEmail, sendWelcomeEmail, sendBackupCodeUsedAlert } = require('../utils/email');
 const { verifyToken } = require('../middleware/auth');
 const ReferralService = require('../services/referralService');
+const authService = require('../services/authService');
 
 const router = express.Router();
 const prisma = new PrismaClient();
+
+// 🆕 Import serwisu 2FA
+let twoFactorService;
+try {
+    twoFactorService = require('../services/twoFactorService');
+    console.log('✅ twoFactorService loaded');
+} catch (e) {
+    console.warn('⚠️ twoFactorService nie znaleziony - 2FA wyłączone');
+    twoFactorService = null;
+}
 
 // Pomocnicze funkcje
 let encrypt, getClientIp, getUserAgent;
@@ -40,7 +51,7 @@ function generateVerificationCode() {
 }
 
 // =====================================
-// POST /api/auth/register - Rejestracja Z ROZSZERZONYM FRAUD DETECTION
+// POST /api/auth/register - Rejestracja
 // =====================================
 router.post('/register', async (req, res) => {
     try {
@@ -49,7 +60,6 @@ router.post('/register', async (req, res) => {
             password, 
             confirmPassword, 
             referralCode,
-            // 🆕 Dane fingerprint z frontendu
             deviceData 
         } = req.body;
         
@@ -57,26 +67,18 @@ router.post('/register', async (req, res) => {
         console.log('📝 REGISTRATION STARTED');
         console.log('📝 Email:', email);
         console.log('📝 Received referralCode:', referralCode || 'NONE');
-        console.log('📝 DeviceData received:', deviceData ? 'YES' : 'NO');
         console.log('========================================');
         
         if (!email || !password) {
-            return res.status(400).json({ 
-                error: 'Email i hasło są wymagane' 
-            });
+            return res.status(400).json({ error: 'Email i hasło są wymagane' });
         }
         
         if (password.length < 8) {
-            return res.status(400).json({ 
-                error: 'Hasło musi mieć minimum 8 znaków' 
-            });
+            return res.status(400).json({ error: 'Hasło musi mieć minimum 8 znaków' });
         }
 
-        // Sprawdź confirmPassword jeśli podane
         if (confirmPassword && password !== confirmPassword) {
-            return res.status(400).json({ 
-                error: 'Hasła nie są identyczne' 
-            });
+            return res.status(400).json({ error: 'Hasła nie są identyczne' });
         }
         
         const existingUser = await prisma.user.findUnique({
@@ -84,9 +86,7 @@ router.post('/register', async (req, res) => {
         });
         
         if (existingUser) {
-            return res.status(400).json({ 
-                error: 'Użytkownik z tym emailem już istnieje' 
-            });
+            return res.status(400).json({ error: 'Użytkownik z tym emailem już istnieje' });
         }
         
         const hashedPassword = await bcrypt.hash(password, 12);
@@ -94,80 +94,60 @@ router.post('/register', async (req, res) => {
         const clientIp = getClientIp(req);
         const userAgent = getUserAgent(req);
         
-        // ========================================
-        // 🆕 ROZSZERZONE PRZYGOTOWANIE DANYCH FINGERPRINT
-        // ========================================
+        // Przygotowanie danych fingerprint
         let ipHash = null;
         let userAgentHash = null;
         let deviceFingerprint = null;
 
-        // Hash IP
         try {
             if (clientIp && clientIp !== 'unknown') {
                 ipHash = ReferralService.hashIP(clientIp);
-                console.log('✅ IP hashed successfully');
             }
         } catch (hashError) {
-            console.error('❌ Error hashing IP:', hashError.message);
+            console.error('Error hashing IP:', hashError.message);
         }
 
-        // 🆕 Hash User-Agent
         try {
             if (userAgent && userAgent !== 'unknown') {
                 userAgentHash = ReferralService.hashUserAgent(userAgent);
-                console.log('✅ User-Agent hashed successfully');
             }
         } catch (hashError) {
-            console.error('❌ Error hashing User-Agent:', hashError.message);
+            console.error('Error hashing User-Agent:', hashError.message);
         }
 
-        // 🆕 Generuj Device Fingerprint
         try {
             if (deviceData) {
                 deviceFingerprint = ReferralService.generateDeviceFingerprint(deviceData);
-                console.log('✅ Device fingerprint generated:', deviceFingerprint ? 'YES' : 'NO');
             }
         } catch (fpError) {
-            console.error('❌ Error generating fingerprint:', fpError.message);
+            console.error('Error generating fingerprint:', fpError.message);
         }
 
-        // ========================================
-        // OBSŁUGA KODU POLECAJĄCEGO Z ROZSZERZONYM FRAUD DETECTION
-        // ========================================
+        // Obsługa kodu polecającego
         let referrerId = null;
         let referrerData = null;
         let bonusExpires = null;
         let fraudData = { isSuspicious: false, riskScore: 0, reasons: [], details: {} };
 
-        // Waliduj kod polecający
         if (referralCode && referralCode.trim() !== '') {
             const cleanCode = referralCode.trim().toUpperCase();
-            console.log('🔍 Validating referral code:', cleanCode);
             
             try {
                 referrerData = await ReferralService.validateReferralCode(cleanCode);
                 
                 if (referrerData) {
                     referrerId = referrerData.id;
-                    console.log('✅ Referrer FOUND:', {
-                        id: referrerData.id,
-                        email: referrerData.email,
-                        referralDisabled: referrerData.referralDisabled
-                    });
 
-                    // Pobierz ustawienia bonusu
                     try {
                         const settings = await ReferralService.getSettings();
                         if (settings && settings.referralBonusDuration) {
                             bonusExpires = new Date();
                             bonusExpires.setDate(bonusExpires.getDate() + settings.referralBonusDuration);
-                            console.log('📝 Bonus expires:', bonusExpires);
                         }
                     } catch (settingsError) {
-                        console.error('❌ Error getting settings:', settingsError.message);
+                        console.error('Error getting settings:', settingsError.message);
                     }
 
-                    // 🆕 ROZSZERZONE sprawdzenie fraudu
                     try {
                         fraudData = await ReferralService.checkFraudulentReferral(referrerId, {
                             ipHash,
@@ -177,25 +157,16 @@ router.post('/register', async (req, res) => {
                             screenResolution: deviceData?.screenResolution,
                             timezone: deviceData?.timezone
                         });
-                        console.log('📝 Fraud check result:', {
-                            isSuspicious: fraudData.isSuspicious,
-                            riskScore: fraudData.riskScore,
-                            reasons: fraudData.reasons
-                        });
                     } catch (fraudError) {
-                        console.error('❌ Error checking fraud:', fraudError.message);
+                        console.error('Error checking fraud:', fraudError.message);
                     }
-                } else {
-                    console.log('⚠️ Referral code NOT FOUND or DISABLED:', cleanCode);
                 }
             } catch (refError) {
-                console.error('❌ Error validating referral code:', refError.message);
+                console.error('Error validating referral code:', refError.message);
             }
         }
 
-        // ========================================
-        // GENEROWANIE KODU POLECAJĄCEGO DLA NOWEGO UŻYTKOWNIKA
-        // ========================================
+        // Generowanie kodu polecającego dla nowego użytkownika
         let userReferralCode = null;
         let isUnique = false;
         let attempts = 0;
@@ -210,22 +181,10 @@ router.post('/register', async (req, res) => {
         }
 
         if (!isUnique) {
-            console.error('❌ Failed to generate unique referral code');
             userReferralCode = null;
-        } else {
-            console.log('✅ Generated referral code:', userReferralCode);
         }
 
-        // ========================================
-        // TWORZENIE UŻYTKOWNIKA Z ROZSZERZONYMI DANYMI
-        // ========================================
         const encryptedIp = encrypt(clientIp);
-
-        console.log('📝 Creating user with:');
-        console.log('   - referralCode:', userReferralCode);
-        console.log('   - referredById:', referrerId);
-        console.log('   - referralFraudFlag:', fraudData.isSuspicious);
-        console.log('   - riskScore:', fraudData.riskScore);
         
         const user = await prisma.user.create({
             data: {
@@ -236,18 +195,15 @@ router.post('/register', async (req, res) => {
                 registrationIp: encryptedIp,
                 lastLoginIp: encryptedIp,
                 lastLoginAt: new Date(),
-                // POLA REFERRALI
                 referralCode: userReferralCode,
                 referredById: referrerId,
                 referralBonusExpires: bonusExpires,
-                // 🆕 ROZSZERZONE POLA FINGERPRINT
                 referralIpHash: ipHash,
                 deviceFingerprint: deviceFingerprint,
                 userAgentHash: userAgentHash,
                 browserLanguage: deviceData?.language || null,
                 screenResolution: deviceData?.screenResolution || null,
                 timezone: deviceData?.timezone || null,
-                // FLAGI FRAUDU
                 referralFraudFlag: fraudData.isSuspicious,
                 referralFraudReason: fraudData.reasons?.length > 0 ? fraudData.reasons.join(', ') : null,
                 referralFraudCheckedAt: referrerId ? new Date() : null
@@ -255,21 +211,15 @@ router.post('/register', async (req, res) => {
         });
 
         console.log('✅ User created:', user.id);
-        console.log('   - referralCode:', user.referralCode);
-        console.log('   - referredById:', user.referredById);
-        console.log('   - referralFraudFlag:', user.referralFraudFlag);
 
-        // 🆕 Utwórz alert fraudu jeśli wykryto podejrzenie
         if (fraudData.isSuspicious && referrerId) {
             try {
                 await ReferralService.createFraudAlert(referrerId, user.id, fraudData);
-                console.log('🚨 Fraud alert created for user:', user.id);
             } catch (alertError) {
-                console.error('❌ Error creating fraud alert:', alertError.message);
+                console.error('Error creating fraud alert:', alertError.message);
             }
         }
         
-        // Zapisz log IP
         try {
             await prisma.ipLog.create({
                 data: {
@@ -283,17 +233,11 @@ router.post('/register', async (req, res) => {
             console.warn('Nie udało się zapisać IP log:', e.message);
         }
         
-        // Wyślij email weryfikacyjny
         try {
             await sendVerificationEmail(email, verificationCode);
-            console.log('✅ Verification email sent');
         } catch (emailError) {
-            console.error('❌ Błąd wysyłania emaila:', emailError.message);
+            console.error('Błąd wysyłania emaila:', emailError.message);
         }
-
-        console.log('========================================');
-        console.log('✅ REGISTRATION COMPLETED');
-        console.log('========================================');
         
         res.status(201).json({
             success: true,
@@ -302,67 +246,112 @@ router.post('/register', async (req, res) => {
         });
         
     } catch (error) {
-        console.error('========================================');
-        console.error('❌ REGISTRATION ERROR:', error.message);
-        console.error('❌ Stack:', error.stack);
-        console.error('========================================');
-        res.status(500).json({ 
-            error: 'Błąd serwera podczas rejestracji' 
-        });
+        console.error('REGISTRATION ERROR:', error.message);
+        res.status(500).json({ error: 'Błąd serwera podczas rejestracji' });
     }
 });
 
 // =====================================
-// POST /api/auth/login - Logowanie
+// 🆕 POST /api/auth/login - Logowanie Z OBSŁUGĄ 2FA
 // =====================================
 router.post('/login', async (req, res) => {
     try {
         const { email, password } = req.body;
         
         if (!email || !password) {
-            return res.status(400).json({ 
-                error: 'Email i hasło są wymagane' 
-            });
+            return res.status(400).json({ error: 'Email i hasło są wymagane' });
         }
         
+        // 🆕 Rozszerzone pobieranie danych z polami 2FA
         const user = await prisma.user.findUnique({
-            where: { email: email.toLowerCase() }
+            where: { email: email.toLowerCase() },
+            select: {
+                id: true,
+                email: true,
+                password_hash: true,
+                isActive: true,
+                isVerified: true,
+                isAdmin: true,
+                balance: true,
+                totalEarned: true,
+                referralCode: true,
+                // 🆕 Pola 2FA
+                twoFactorEnabled: true,
+                twoFactorMethod: true,
+                twoFactorRequired: true
+            }
         });
         
         if (!user) {
-            return res.status(401).json({ 
-                error: 'Nieprawidłowy email lub hasło' 
-            });
+            return res.status(401).json({ error: 'Nieprawidłowy email lub hasło' });
         }
         
         if (!user.isActive) {
-            return res.status(403).json({ 
-                error: 'Twoje konto zostało zablokowane' 
-            });
+            return res.status(403).json({ error: 'Twoje konto zostało zablokowane' });
         }
         
         const isPasswordValid = await bcrypt.compare(password, user.password_hash);
         
         if (!isPasswordValid) {
-            return res.status(401).json({ 
-                error: 'Nieprawidłowy email lub hasło' 
-            });
+            return res.status(401).json({ error: 'Nieprawidłowy email lub hasło' });
         }
         
         if (!user.isVerified) {
             return res.status(403).json({ 
                 error: 'Zweryfikuj swój email przed zalogowaniem',
-                needsVerification: true
+                needsVerification: true,
+                email: user.email
             });
         }
         
         const clientIp = getClientIp(req);
         const userAgent = getUserAgent(req);
-        const encryptedIp = encrypt(clientIp);
 
-        // 🆕 Hash IP i User-Agent dla referrali
+        // ========================================
+        // 🆕 SPRAWDZENIE 2FA
+        // ========================================
+
+        // Przypadek 1: 2FA wymagane przez admina, ale nie skonfigurowane
+        if (user.twoFactorRequired && !user.twoFactorEnabled) {
+            console.log('🔐 2FA required but not enabled for:', user.email);
+            
+            const setupToken = authService.generateTemporaryToken(user.id, '2fa-setup', '15m');
+            
+            return res.json({
+                success: true,
+                requiresTwoFactorSetup: true,
+                message: 'Administrator wymaga włączenia 2FA. Skonfiguruj teraz aby kontynuować.',
+                setupToken,
+                userId: user.id,
+                email: user.email
+            });
+        }
+
+        // Przypadek 2: 2FA włączone - wymagaj weryfikacji
+        if (user.twoFactorEnabled && user.twoFactorMethod && user.twoFactorMethod.length > 0) {
+            console.log('🔐 2FA enabled for:', user.email, 'Methods:', user.twoFactorMethod);
+            
+            const challengeToken = authService.generateTemporaryToken(user.id, '2fa-verify', '5m');
+            
+            return res.json({
+                success: true,
+                requiresTwoFactor: true,
+                twoFactorMethods: user.twoFactorMethod,
+                challengeToken,
+                userId: user.id,
+                message: 'Wymagana weryfikacja 2FA'
+            });
+        }
+
+        // ========================================
+        // LOGOWANIE BEZ 2FA
+        // ========================================
+        console.log('✅ Login without 2FA for:', user.email);
+
+        const encryptedIp = encrypt(clientIp);
         let ipHash = null;
         let userAgentHash = null;
+        
         try {
             ipHash = ReferralService.hashIP(clientIp);
             userAgentHash = ReferralService.hashUserAgent(userAgent);
@@ -370,7 +359,6 @@ router.post('/login', async (req, res) => {
             console.error('Error hashing login data:', e.message);
         }
         
-        // Aktualizuj ostatnie logowanie
         await prisma.user.update({
             where: { id: user.id },
             data: {
@@ -381,7 +369,6 @@ router.post('/login', async (req, res) => {
             }
         });
         
-        // Zapisz log IP
         try {
             await prisma.ipLog.create({
                 data: {
@@ -395,15 +382,7 @@ router.post('/login', async (req, res) => {
             console.warn('Nie udało się zapisać IP log:', e.message);
         }
         
-        const token = jwt.sign(
-            { 
-                userId: user.id, 
-                email: user.email,
-                isAdmin: user.isAdmin 
-            },
-            process.env.JWT_SECRET,
-            { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
-        );
+        const token = authService.generateToken(user.id);
         
         res.json({
             success: true,
@@ -415,15 +394,242 @@ router.post('/login', async (req, res) => {
                 isAdmin: user.isAdmin,
                 balance: parseFloat(user.balance) || 0,
                 totalEarned: parseFloat(user.totalEarned) || 0,
-                referralCode: user.referralCode
+                referralCode: user.referralCode,
+                twoFactorEnabled: user.twoFactorEnabled
             }
         });
         
     } catch (error) {
         console.error('Błąd logowania:', error);
-        res.status(500).json({ 
-            error: 'Błąd serwera podczas logowania' 
+        res.status(500).json({ error: 'Błąd serwera podczas logowania' });
+    }
+});
+
+// =====================================
+// 🆕 POST /api/auth/2fa/verify - Weryfikacja 2FA przy logowaniu
+// =====================================
+router.post('/2fa/verify', async (req, res) => {
+    try {
+        const { challengeToken, code, method, response } = req.body;
+
+        if (!challengeToken) {
+            return res.status(400).json({ error: 'Token weryfikacyjny jest wymagany' });
+        }
+
+        // Zweryfikuj challengeToken
+        let decoded;
+        try {
+            decoded = authService.verifyToken(challengeToken);
+        } catch (tokenError) {
+            return res.status(401).json({ error: 'Token wygasł. Zaloguj się ponownie.' });
+        }
+
+        // Sprawdź czy token jest do weryfikacji 2FA
+        if (decoded.purpose && decoded.purpose !== '2fa-verify') {
+            return res.status(401).json({ error: 'Nieprawidłowy token' });
+        }
+
+        const userId = decoded.userId || decoded.id;
+
+        const user = await prisma.user.findUnique({
+            where: { id: userId },
+            select: {
+                id: true,
+                email: true,
+                isActive: true,
+                isAdmin: true,
+                balance: true,
+                totalEarned: true,
+                referralCode: true,
+                twoFactorEnabled: true,
+                twoFactorMethod: true
+            }
         });
+
+        if (!user) {
+            return res.status(404).json({ error: 'Użytkownik nie znaleziony' });
+        }
+
+        if (!user.isActive) {
+            return res.status(403).json({ error: 'Konto zablokowane' });
+        }
+
+        if (!user.twoFactorEnabled) {
+            return res.status(400).json({ error: '2FA nie jest włączone dla tego konta' });
+        }
+
+        const clientIp = getClientIp(req);
+        const userAgent = getUserAgent(req);
+        let verified = false;
+
+        // ========================================
+        // Weryfikacja w zależności od metody
+        // ========================================
+        
+        if (method === 'TOTP' || (!method && code && code.length === 6)) {
+            // Weryfikacja kodem TOTP
+            if (!code) {
+                return res.status(400).json({ error: 'Kod weryfikacyjny jest wymagany' });
+            }
+
+            if (!twoFactorService) {
+                return res.status(500).json({ error: 'Serwis 2FA niedostępny' });
+            }
+
+            try {
+                verified = await twoFactorService.verifyTwoFactorCode(userId, code, clientIp, userAgent);
+            } catch (verifyError) {
+                console.error('TOTP verification error:', verifyError);
+                return res.status(400).json({ error: 'Błąd weryfikacji kodu' });
+            }
+
+        } else if (method === 'WEBAUTHN') {
+            // Weryfikacja WebAuthn
+            if (!response) {
+                return res.status(400).json({ error: 'Odpowiedź WebAuthn jest wymagana' });
+            }
+
+            if (!twoFactorService) {
+                return res.status(500).json({ error: 'Serwis 2FA niedostępny' });
+            }
+
+            try {
+                const result = await twoFactorService.verifyWebAuthnAuthentication(userId, response);
+                verified = result.verified;
+            } catch (webauthnError) {
+                console.error('WebAuthn verification error:', webauthnError);
+                return res.status(400).json({ error: 'Weryfikacja klucza nie powiodła się' });
+            }
+
+        } else if (method === 'BACKUP_CODE' || (code && code.length === 8)) {
+            // Weryfikacja kodem zapasowym
+            if (!code) {
+                return res.status(400).json({ error: 'Kod zapasowy jest wymagany' });
+            }
+
+            if (!twoFactorService) {
+                return res.status(500).json({ error: 'Serwis 2FA niedostępny' });
+            }
+
+            try {
+                verified = await twoFactorService.verifyBackupCode(userId, code);
+
+                // Jeśli użyto kod zapasowy, wyślij alert
+                if (verified) {
+                    const remainingCodes = await twoFactorService.getRemainingBackupCodesCount(userId);
+                    sendBackupCodeUsedAlert(user.email, remainingCodes)
+                        .catch(err => console.error('Error sending backup code alert:', err));
+                }
+            } catch (backupError) {
+                console.error('Backup code verification error:', backupError);
+                return res.status(400).json({ error: 'Błąd weryfikacji kodu zapasowego' });
+            }
+        } else {
+            return res.status(400).json({ error: 'Nieobsługiwana metoda weryfikacji' });
+        }
+
+        if (!verified) {
+            // Zapisz nieudaną próbę
+            if (twoFactorService) {
+                try {
+                    await twoFactorService.logTwoFactorAction(userId, 'FAILED', method || 'TOTP', false, clientIp, userAgent, 'Nieprawidłowy kod');
+                } catch (logError) {
+                    console.error('Error logging failed 2FA attempt:', logError);
+                }
+            }
+            return res.status(401).json({ error: 'Nieprawidłowy kod weryfikacyjny' });
+        }
+
+        // ========================================
+        // 2FA zweryfikowane - wydaj pełny token
+        // ========================================
+        console.log('✅ 2FA verified for:', user.email);
+
+        const encryptedIp = encrypt(clientIp);
+        let ipHash = null;
+        
+        try {
+            ipHash = ReferralService.hashIP(clientIp);
+        } catch (e) {}
+
+        await prisma.user.update({
+            where: { id: user.id },
+            data: { 
+                lastLoginAt: new Date(),
+                lastLoginIp: encryptedIp,
+                twoFactorLastUsedAt: new Date()
+            }
+        });
+
+        // Zapisz log
+        try {
+            await prisma.ipLog.create({
+                data: {
+                    userId: user.id,
+                    encryptedIp: encryptedIp || 'unknown',
+                    action: 'LOGIN_2FA',
+                    userAgent: userAgent?.substring(0, 500)
+                }
+            });
+        } catch (e) {}
+
+        const token = authService.generateToken(user.id);
+
+        res.json({
+            success: true,
+            message: 'Weryfikacja 2FA udana',
+            token,
+            user: {
+                id: user.id,
+                email: user.email,
+                isAdmin: user.isAdmin,
+                balance: parseFloat(user.balance) || 0,
+                totalEarned: parseFloat(user.totalEarned) || 0,
+                referralCode: user.referralCode,
+                twoFactorEnabled: user.twoFactorEnabled
+            }
+        });
+
+    } catch (error) {
+        console.error('Błąd weryfikacji 2FA:', error);
+        res.status(500).json({ error: 'Błąd serwera podczas weryfikacji 2FA' });
+    }
+});
+
+// =====================================
+// 🆕 POST /api/auth/2fa/webauthn/options - Opcje WebAuthn dla logowania
+// =====================================
+router.post('/2fa/webauthn/options', async (req, res) => {
+    try {
+        const { challengeToken } = req.body;
+
+        if (!challengeToken) {
+            return res.status(400).json({ error: 'Token jest wymagany' });
+        }
+
+        let decoded;
+        try {
+            decoded = authService.verifyToken(challengeToken);
+        } catch (tokenError) {
+            return res.status(401).json({ error: 'Token wygasł' });
+        }
+
+        const userId = decoded.userId || decoded.id;
+
+        if (!twoFactorService) {
+            return res.status(500).json({ error: 'Serwis 2FA niedostępny' });
+        }
+
+        const options = await twoFactorService.generateWebAuthnAuthenticationOptions(userId);
+
+        res.json({
+            success: true,
+            options
+        });
+
+    } catch (error) {
+        console.error('Błąd pobierania opcji WebAuthn:', error);
+        res.status(500).json({ error: error.message || 'Błąd serwera' });
     }
 });
 
@@ -435,9 +641,7 @@ router.post('/verify', async (req, res) => {
         const { email, code } = req.body;
         
         if (!email || !code) {
-            return res.status(400).json({ 
-                error: 'Email i kod są wymagane' 
-            });
+            return res.status(400).json({ error: 'Email i kod są wymagane' });
         }
         
         const user = await prisma.user.findFirst({
@@ -449,12 +653,9 @@ router.post('/verify', async (req, res) => {
         });
         
         if (!user) {
-            return res.status(400).json({ 
-                error: 'Nieprawidłowy lub wygasły kod weryfikacyjny' 
-            });
+            return res.status(400).json({ error: 'Nieprawidłowy lub wygasły kod weryfikacyjny' });
         }
         
-        // Zweryfikuj użytkownika
         await prisma.user.update({
             where: { id: user.id },
             data: {
@@ -464,22 +665,11 @@ router.post('/verify', async (req, res) => {
             }
         });
 
-        // Wyślij welcome email
-        console.log('🔔 Wysyłam welcome email do:', user.email);
         sendWelcomeEmail(user.email)
             .then(() => console.log('✅ Welcome email wysłany!'))
             .catch(err => console.error('❌ Welcome email error:', err));
 
-        // Wygeneruj token JWT
-        const token = jwt.sign(
-            { 
-                userId: user.id, 
-                email: user.email,
-                isAdmin: user.isAdmin 
-            },
-            process.env.JWT_SECRET,
-            { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
-        );
+        const token = authService.generateToken(user.id);
         
         res.json({
             success: true,
@@ -497,9 +687,7 @@ router.post('/verify', async (req, res) => {
         
     } catch (error) {
         console.error('Błąd weryfikacji:', error);
-        res.status(500).json({ 
-            error: 'Błąd serwera podczas weryfikacji' 
-        });
+        res.status(500).json({ error: 'Błąd serwera podczas weryfikacji' });
     }
 });
 
@@ -518,9 +706,7 @@ router.get('/verify/:token', async (req, res) => {
         });
         
         if (!user) {
-            return res.status(400).json({ 
-                error: 'Nieprawidłowy lub wygasły token weryfikacyjny' 
-            });
+            return res.status(400).json({ error: 'Nieprawidłowy lub wygasły token weryfikacyjny' });
         }
         
         await prisma.user.update({
@@ -539,9 +725,7 @@ router.get('/verify/:token', async (req, res) => {
         
     } catch (error) {
         console.error('Błąd weryfikacji:', error);
-        res.status(500).json({ 
-            error: 'Błąd serwera podczas weryfikacji' 
-        });
+        res.status(500).json({ error: 'Błąd serwera podczas weryfikacji' });
     }
 });
 
@@ -561,16 +745,11 @@ router.post('/resend-code', async (req, res) => {
         });
         
         if (!user) {
-            return res.json({ 
-                success: true, 
-                message: 'Jeśli konto istnieje, kod został wysłany' 
-            });
+            return res.json({ success: true, message: 'Jeśli konto istnieje, kod został wysłany' });
         }
         
         if (user.isVerified) {
-            return res.status(400).json({ 
-                error: 'Konto jest już zweryfikowane' 
-            });
+            return res.status(400).json({ error: 'Konto jest już zweryfikowane' });
         }
         
         const verificationCode = generateVerificationCode();
@@ -589,10 +768,7 @@ router.post('/resend-code', async (req, res) => {
             console.error('Błąd wysyłania emaila:', emailError.message);
         }
         
-        res.json({
-            success: true,
-            message: 'Nowy kod weryfikacyjny został wysłany'
-        });
+        res.json({ success: true, message: 'Nowy kod weryfikacyjny został wysłany' });
         
     } catch (error) {
         console.error('Błąd resend-code:', error);
@@ -616,16 +792,11 @@ router.post('/resend-verification', async (req, res) => {
         });
         
         if (!user) {
-            return res.json({ 
-                success: true, 
-                message: 'Jeśli konto istnieje, email został wysłany' 
-            });
+            return res.json({ success: true, message: 'Jeśli konto istnieje, email został wysłany' });
         }
         
         if (user.isVerified) {
-            return res.status(400).json({ 
-                error: 'Konto jest już zweryfikowane' 
-            });
+            return res.status(400).json({ error: 'Konto jest już zweryfikowane' });
         }
         
         const verificationCode = generateVerificationCode();
@@ -644,10 +815,7 @@ router.post('/resend-verification', async (req, res) => {
             console.error('Błąd wysyłania emaila:', emailError.message);
         }
         
-        res.json({
-            success: true,
-            message: 'Email weryfikacyjny został wysłany'
-        });
+        res.json({ success: true, message: 'Email weryfikacyjny został wysłany' });
         
     } catch (error) {
         console.error('Błąd resend-verification:', error);
@@ -656,7 +824,7 @@ router.post('/resend-verification', async (req, res) => {
 });
 
 // =====================================
-// GET /api/auth/me - Pobierz aktualnego użytkownika
+// 🆕 GET /api/auth/me - Pobierz aktualnego użytkownika (z danymi 2FA)
 // =====================================
 router.get('/me', verifyToken, async (req, res) => {
     try {
@@ -671,30 +839,44 @@ router.get('/me', verifyToken, async (req, res) => {
                 balance: true,
                 totalEarned: true,
                 createdAt: true,
-                referralCode: true
+                referralCode: true,
+                referralEarnings: true,
+                // 🆕 Pola 2FA
+                twoFactorEnabled: true,
+                twoFactorMethod: true,
+                twoFactorRequired: true,
+                twoFactorEnabledAt: true
             }
         });
         
         if (!user) {
-            return res.status(404).json({ 
-                error: 'Użytkownik nie znaleziony' 
-            });
+            return res.status(404).json({ error: 'Użytkownik nie znaleziony' });
         }
         
         res.json({
             success: true,
             user: {
-                ...user,
+                id: user.id,
+                email: user.email,
+                isAdmin: user.isAdmin,
+                isActive: user.isActive,
+                isVerified: user.isVerified,
                 balance: parseFloat(user.balance) || 0,
-                totalEarned: parseFloat(user.totalEarned) || 0
+                totalEarned: parseFloat(user.totalEarned) || 0,
+                createdAt: user.createdAt,
+                referralCode: user.referralCode,
+                referralEarnings: parseFloat(user.referralEarnings) || 0,
+                // 🆕 Dane 2FA
+                twoFactorEnabled: user.twoFactorEnabled,
+                twoFactorMethods: user.twoFactorMethod || [],
+                twoFactorRequired: user.twoFactorRequired,
+                twoFactorEnabledAt: user.twoFactorEnabledAt
             }
         });
         
     } catch (error) {
         console.error('Błąd pobierania użytkownika:', error);
-        res.status(500).json({ 
-            error: 'Błąd serwera' 
-        });
+        res.status(500).json({ error: 'Błąd serwera' });
     }
 });
 
@@ -702,10 +884,7 @@ router.get('/me', verifyToken, async (req, res) => {
 // POST /api/auth/logout - Wylogowanie
 // =====================================
 router.post('/logout', (req, res) => {
-    res.json({
-        success: true,
-        message: 'Wylogowano pomyślnie'
-    });
+    res.json({ success: true, message: 'Wylogowano pomyślnie' });
 });
 
 module.exports = router;

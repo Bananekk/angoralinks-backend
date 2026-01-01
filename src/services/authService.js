@@ -16,17 +16,31 @@ class AuthService {
         return bcrypt.compare(password, hash);
     }
 
-    // Generowanie tokenu JWT
-    generateToken(userId) {
+    // 🆕 Generowanie tokenu JWT z opcjonalnym expiresIn
+    generateToken(userId, expiresIn = null) {
         return jwt.sign(
-            { userId },
+            { userId, id: userId }, // Dodaję też 'id' dla kompatybilności
             process.env.JWT_SECRET,
-            { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+            { expiresIn: expiresIn || process.env.JWT_EXPIRES_IN || '7d' }
         );
     }
 
-    // Weryfikacja tokenu JWT
+    // 🆕 Generowanie tymczasowego tokenu (np. dla 2FA)
+    generateTemporaryToken(userId, purpose, expiresIn = '5m') {
+        return jwt.sign(
+            { userId, id: userId, purpose },
+            process.env.JWT_SECRET,
+            { expiresIn }
+        );
+    }
+
+    // 🆕 Weryfikacja tokenu JWT - teraz rzuca wyjątek zamiast zwracać null
     verifyToken(token) {
+        return jwt.verify(token, process.env.JWT_SECRET);
+    }
+
+    // 🆕 Bezpieczna weryfikacja (nie rzuca wyjątku)
+    verifyTokenSafe(token) {
         try {
             return jwt.verify(token, process.env.JWT_SECRET);
         } catch (error) {
@@ -67,7 +81,7 @@ class AuthService {
         return prisma.user.create({
             data: {
                 email: email.toLowerCase(),
-                passwordHash
+                password_hash: passwordHash
             }
         });
     }

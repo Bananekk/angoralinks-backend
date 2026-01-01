@@ -7,30 +7,14 @@ const crypto = require('crypto');
 
 const prisma = new PrismaClient();
 
-// Na początku pliku authRoutes.js, po importach, dodaj:
-
-// TYMCZASOWY TEST - usuń po debugowaniu
-router.post('/test-referral', async (req, res) => {
-    const { referralCode } = req.body;
-    const ReferralService = require('../services/referralService');
-    
-    console.log('🧪 TEST: Received referralCode:', referralCode);
-    
-    try {
-        const referrer = await ReferralService.validateReferralCode(referralCode);
-        console.log('🧪 TEST: Referrer found:', referrer ? referrer.id : 'NONE');
-        
-        res.json({
-            received: referralCode,
-            found: !!referrer,
-            referrerId: referrer?.id || null,
-            referrerEmail: referrer?.email || null
-        });
-    } catch (error) {
-        console.error('🧪 TEST ERROR:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
+// 🆕 Import serwisu 2FA
+let twoFactorService;
+try {
+    twoFactorService = require('../services/twoFactorService');
+} catch (e) {
+    console.warn('⚠️ twoFactorService nie znaleziony - 2FA wyłączone');
+    twoFactorService = null;
+}
 
 // Helper do pobierania IP
 const getClientIp = (req) => {
@@ -194,7 +178,7 @@ class AuthController {
                 verification_expires: verificationExpires,
                 isVerified: false,
                 referralCode: userReferralCode,
-                referredById: referrerId,  // <-- KLUCZOWE POLE
+                referredById: referrerId,
                 referralBonusExpires: bonusExpires,
                 registrationIp: ipHash,
                 referralIpHash: ipHash,
@@ -239,7 +223,6 @@ class AuthController {
                 console.log('✅ Verification email sent to:', email);
             } catch (emailError) {
                 console.error('❌ Error sending email:', emailError.message);
-                // Usuń użytkownika jeśli email się nie wysłał
                 await prisma.user.delete({ where: { id: newUser.id } });
                 return res.status(500).json({ error: 'Błąd wysyłania email weryfikacyjnego' });
             }
@@ -383,7 +366,9 @@ class AuthController {
         }
     }
 
-    // POST /api/auth/login
+    // ========================================
+    // 🆕 POST /api/auth/login - Z OBSŁUGĄ 2FA
+    // ========================================
     async login(req, res) {
         try {
             const { email, password } = req.body;
@@ -392,9 +377,33 @@ class AuthController {
                 return res.status(400).json({ error: 'Email i hasło są wymagane' });
             }
 
-            const user = await authService.findByEmail(email);
+            const user = await prisma.user.findUnique({
+                where: { email: email.toLowerCase() },
+                select: {
+                    id: true,
+                    email: true,
+                    password_hash: true,
+                    isVerified: true,
+                    isActive: true,
+                    isAdmin: true,
+                    balance: true,
+                    referralCode: true,
+                    // 🆕 Pola 2FA
+                    twoFactorEnabled: true,
+                    twoFactorMethod: true,
+                    twoFactorRequired: true
+                }
+            });
+
             if (!user) {
                 return res.status(401).json({ error: 'Nieprawidłowy email lub hasło' });
+            }
+
+            // Sprawdź czy konto aktywne
+            if (!user.isActive) {
+                return res.status(403).json({ 
+                    error: 'Konto zostało zablokowane. Skontaktuj się z supportem.' 
+                });
             }
 
             // Sprawdź czy zweryfikowany
@@ -411,7 +420,7 @@ class AuthController {
                 return res.status(401).json({ error: 'Nieprawidłowy email lub hasło' });
             }
 
-            // Pobierz IP i zaktualizuj
+            // Pobierz IP
             const loginIp = getClientIp(req);
             let ipHash = null;
             
@@ -420,6 +429,49 @@ class AuthController {
             } catch (e) {
                 console.error('Error hashing login IP:', e.message);
             }
+
+            // ========================================
+            // 🆕 SPRAWDZENIE 2FA
+            // ========================================
+
+            // Przypadek 1: 2FA wymagane przez admina, ale nie skonfigurowane
+            if (user.twoFactorRequired && !user.twoFactorEnabled) {
+                console.log('🔐 2FA required but not enabled for:', user.email);
+                
+                // Generuj tymczasowy token do konfiguracji 2FA
+                const setupToken = authService.generateToken(user.id, '15m'); // Token ważny 15 minut
+                
+                return res.json({
+                    success: true,
+                    requiresTwoFactorSetup: true,
+                    message: 'Administrator wymaga włączenia 2FA. Skonfiguruj teraz aby kontynuować.',
+                    setupToken,
+                    userId: user.id,
+                    email: user.email
+                });
+            }
+
+            // Przypadek 2: 2FA włączone - wymagaj weryfikacji
+            if (user.twoFactorEnabled && user.twoFactorMethod && user.twoFactorMethod.length > 0) {
+                console.log('🔐 2FA enabled for:', user.email, 'Methods:', user.twoFactorMethod);
+                
+                // Generuj tymczasowy token do weryfikacji 2FA
+                const challengeToken = authService.generateToken(user.id, '5m'); // Token ważny 5 minut
+                
+                return res.json({
+                    success: true,
+                    requiresTwoFactor: true,
+                    twoFactorMethods: user.twoFactorMethod,
+                    challengeToken,
+                    userId: user.id,
+                    message: 'Wymagana weryfikacja 2FA'
+                });
+            }
+
+            // ========================================
+            // LOGOWANIE BEZ 2FA
+            // ========================================
+            console.log('✅ Login without 2FA for:', user.email);
 
             // Aktualizuj ostatnie logowanie
             await prisma.user.update({
@@ -437,10 +489,11 @@ class AuthController {
                 httpOnly: true,
                 secure: process.env.NODE_ENV === 'production',
                 sameSite: 'strict',
-                maxAge: 7 * 24 * 60 * 60 * 1000
+                maxAge: 7 * 24 * 60 * 60 * 1000 // 7 dni
             });
 
             res.json({
+                success: true,
                 message: 'Logowanie udane',
                 user: {
                     id: user.id,
@@ -448,7 +501,8 @@ class AuthController {
                     balance: parseFloat(user.balance || 0),
                     isVerified: user.isVerified,
                     isAdmin: user.isAdmin,
-                    referralCode: user.referralCode
+                    referralCode: user.referralCode,
+                    twoFactorEnabled: user.twoFactorEnabled
                 },
                 token
             });
@@ -456,6 +510,200 @@ class AuthController {
         } catch (error) {
             console.error('Błąd logowania:', error);
             res.status(500).json({ error: 'Błąd serwera podczas logowania' });
+        }
+    }
+
+    // ========================================
+    // 🆕 POST /api/auth/2fa/verify - Weryfikacja 2FA przy logowaniu
+    // ========================================
+    async verifyTwoFactor(req, res) {
+        try {
+            const { challengeToken, code, method, response } = req.body;
+
+            if (!challengeToken) {
+                return res.status(400).json({ error: 'Token weryfikacyjny jest wymagany' });
+            }
+
+            // Zweryfikuj challengeToken
+            let decoded;
+            try {
+                decoded = authService.verifyToken(challengeToken);
+            } catch (tokenError) {
+                return res.status(401).json({ error: 'Token wygasł. Zaloguj się ponownie.' });
+            }
+
+            const userId = decoded.id || decoded.userId;
+
+            const user = await prisma.user.findUnique({
+                where: { id: userId },
+                select: {
+                    id: true,
+                    email: true,
+                    isActive: true,
+                    isAdmin: true,
+                    balance: true,
+                    referralCode: true,
+                    twoFactorEnabled: true,
+                    twoFactorMethod: true,
+                    twoFactorSecret: true
+                }
+            });
+
+            if (!user) {
+                return res.status(404).json({ error: 'Użytkownik nie znaleziony' });
+            }
+
+            if (!user.twoFactorEnabled) {
+                return res.status(400).json({ error: '2FA nie jest włączone dla tego konta' });
+            }
+
+            const loginIp = getClientIp(req);
+            const userAgent = req.headers['user-agent'];
+            let verified = false;
+
+            // ========================================
+            // Weryfikacja w zależności od metody
+            // ========================================
+            
+            if (method === 'TOTP' || (!method && code)) {
+                // Weryfikacja kodem TOTP
+                if (!code) {
+                    return res.status(400).json({ error: 'Kod weryfikacyjny jest wymagany' });
+                }
+
+                if (!twoFactorService) {
+                    return res.status(500).json({ error: 'Serwis 2FA niedostępny' });
+                }
+
+                verified = await twoFactorService.verifyTwoFactorCode(userId, code, loginIp, userAgent);
+
+            } else if (method === 'WEBAUTHN') {
+                // Weryfikacja WebAuthn
+                if (!response) {
+                    return res.status(400).json({ error: 'Odpowiedź WebAuthn jest wymagana' });
+                }
+
+                if (!twoFactorService) {
+                    return res.status(500).json({ error: 'Serwis 2FA niedostępny' });
+                }
+
+                try {
+                    const result = await twoFactorService.verifyWebAuthnAuthentication(userId, response);
+                    verified = result.verified;
+                } catch (webauthnError) {
+                    console.error('WebAuthn verification error:', webauthnError);
+                    return res.status(400).json({ error: 'Weryfikacja klucza nie powiodła się' });
+                }
+
+            } else if (method === 'BACKUP_CODE') {
+                // Weryfikacja kodem zapasowym
+                if (!code) {
+                    return res.status(400).json({ error: 'Kod zapasowy jest wymagany' });
+                }
+
+                if (!twoFactorService) {
+                    return res.status(500).json({ error: 'Serwis 2FA niedostępny' });
+                }
+
+                verified = await twoFactorService.verifyBackupCode(userId, code);
+
+                // Jeśli użyto kod zapasowy, wyślij alert
+                if (verified) {
+                    const remainingCodes = await twoFactorService.getRemainingBackupCodesCount(userId);
+                    emailUtils.sendBackupCodeUsedAlert(user.email, remainingCodes)
+                        .catch(err => console.error('Error sending backup code alert:', err));
+                }
+            } else {
+                return res.status(400).json({ error: 'Nieobsługiwana metoda weryfikacji' });
+            }
+
+            if (!verified) {
+                return res.status(401).json({ error: 'Nieprawidłowy kod weryfikacyjny' });
+            }
+
+            // ========================================
+            // 2FA zweryfikowane - wydaj pełny token
+            // ========================================
+            console.log('✅ 2FA verified for:', user.email);
+
+            // Aktualizuj ostatnie logowanie
+            let ipHash = null;
+            try {
+                ipHash = ReferralService.hashIP(loginIp);
+            } catch (e) {}
+
+            await prisma.user.update({
+                where: { id: user.id },
+                data: { 
+                    lastLoginAt: new Date(),
+                    lastLoginIp: ipHash,
+                    twoFactorLastUsedAt: new Date()
+                }
+            });
+
+            const token = authService.generateToken(user.id);
+
+            res.cookie('token', token, {
+                httpOnly: true,
+                secure: process.env.NODE_ENV === 'production',
+                sameSite: 'strict',
+                maxAge: 7 * 24 * 60 * 60 * 1000
+            });
+
+            res.json({
+                success: true,
+                message: 'Weryfikacja 2FA udana',
+                user: {
+                    id: user.id,
+                    email: user.email,
+                    balance: parseFloat(user.balance || 0),
+                    isAdmin: user.isAdmin,
+                    referralCode: user.referralCode,
+                    twoFactorEnabled: user.twoFactorEnabled
+                },
+                token
+            });
+
+        } catch (error) {
+            console.error('Błąd weryfikacji 2FA:', error);
+            res.status(500).json({ error: 'Błąd serwera podczas weryfikacji 2FA' });
+        }
+    }
+
+    // ========================================
+    // 🆕 POST /api/auth/2fa/webauthn/options - Opcje WebAuthn dla logowania
+    // ========================================
+    async getWebAuthnLoginOptions(req, res) {
+        try {
+            const { challengeToken } = req.body;
+
+            if (!challengeToken) {
+                return res.status(400).json({ error: 'Token jest wymagany' });
+            }
+
+            let decoded;
+            try {
+                decoded = authService.verifyToken(challengeToken);
+            } catch (tokenError) {
+                return res.status(401).json({ error: 'Token wygasł' });
+            }
+
+            const userId = decoded.id || decoded.userId;
+
+            if (!twoFactorService) {
+                return res.status(500).json({ error: 'Serwis 2FA niedostępny' });
+            }
+
+            const options = await twoFactorService.generateWebAuthnAuthenticationOptions(userId);
+
+            res.json({
+                success: true,
+                options
+            });
+
+        } catch (error) {
+            console.error('Błąd pobierania opcji WebAuthn:', error);
+            res.status(500).json({ error: error.message || 'Błąd serwera' });
         }
     }
 
@@ -475,13 +723,47 @@ class AuthController {
             if (!req.user) {
                 return res.status(401).json({ error: 'Nie zalogowano' });
             }
+
+            // 🆕 Dodaj informacje o 2FA
+            const user = await prisma.user.findUnique({
+                where: { id: req.user.id },
+                select: {
+                    id: true,
+                    email: true,
+                    balance: true,
+                    totalEarned: true,
+                    isVerified: true,
+                    isAdmin: true,
+                    referralCode: true,
+                    referralEarnings: true,
+                    twoFactorEnabled: true,
+                    twoFactorMethod: true,
+                    twoFactorRequired: true
+                }
+            });
+
+            if (!user) {
+                return res.status(404).json({ error: 'Użytkownik nie znaleziony' });
+            }
+
             res.json({ 
                 user: {
-                    ...req.user,
-                    referralCode: req.user.referralCode
+                    id: user.id,
+                    email: user.email,
+                    balance: parseFloat(user.balance || 0),
+                    totalEarned: parseFloat(user.totalEarned || 0),
+                    isVerified: user.isVerified,
+                    isAdmin: user.isAdmin,
+                    referralCode: user.referralCode,
+                    referralEarnings: parseFloat(user.referralEarnings || 0),
+                    // 🆕 Dane 2FA
+                    twoFactorEnabled: user.twoFactorEnabled,
+                    twoFactorMethods: user.twoFactorMethod || [],
+                    twoFactorRequired: user.twoFactorRequired
                 }
             });
         } catch (error) {
+            console.error('Błąd /me:', error);
             res.status(500).json({ error: 'Błąd serwera' });
         }
     }

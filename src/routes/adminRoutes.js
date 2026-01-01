@@ -27,6 +27,15 @@ try {
     maskIp = (ip) => ip ? ip.replace(/\.\d+$/, '.***') : 'unknown';
 }
 
+// 🆕 Import serwisu 2FA
+let twoFactorService;
+try {
+    twoFactorService = require('../services/twoFactorService');
+} catch (e) {
+    console.warn('twoFactorService nie znaleziony - funkcje 2FA będą niedostępne');
+    twoFactorService = null;
+}
+
 // =====================
 // SERWIS ADSTERRA
 // =====================
@@ -202,7 +211,9 @@ router.get('/dashboard', async (req, res) => {
             totalEarningsResult,
             activeUsers,
             todayUsers,
-            adsterraStats
+            adsterraStats,
+            // 🆕 Statystyki 2FA
+            usersWithTwoFactor
         ] = await Promise.all([
             prisma.user.count(),
             prisma.link.count(),
@@ -222,7 +233,11 @@ router.get('/dashboard', async (req, res) => {
             prisma.user.count({
                 where: { createdAt: { gte: today } }
             }),
-            adsterraService.getAllStats()
+            adsterraService.getAllStats(),
+            // 🆕 Liczba użytkowników z 2FA
+            prisma.user.count({
+                where: { twoFactorEnabled: true }
+            })
         ]);
 
         const last7Days = [];
@@ -271,7 +286,12 @@ router.get('/dashboard', async (req, res) => {
                 totalVisits,
                 todayVisits,
                 pendingPayouts,
-                totalEarnings: totalEarningsResult._sum.totalEarned || 0
+                totalEarnings: totalEarningsResult._sum.totalEarned || 0,
+                // 🆕 Dane 2FA
+                usersWithTwoFactor,
+                twoFactorAdoptionRate: totalUsers > 0 
+                    ? ((usersWithTwoFactor / totalUsers) * 100).toFixed(1) 
+                    : 0
             },
             adsterra: adsterraStats,
             last7Days
@@ -449,12 +469,18 @@ router.get('/adsterra-status', async (req, res) => {
 });
 
 // ======================
-// UŻYTKOWNICY
+// UŻYTKOWNICY (z danymi 2FA)
 // ======================
 
 router.get('/users', async (req, res) => {
     try {
-        const { page = 1, limit = 20, search = '', status = 'all' } = req.query;
+        const { 
+            page = 1, 
+            limit = 20, 
+            search = '', 
+            status = 'all',
+            twoFactorFilter = 'all'  // 🆕 Filtr 2FA
+        } = req.query;
         const skip = (parseInt(page) - 1) * parseInt(limit);
 
         let where = {};
@@ -471,6 +497,15 @@ router.get('/users', async (req, res) => {
             where.isAdmin = true;
         }
 
+        // 🆕 Filtr 2FA
+        if (twoFactorFilter === 'enabled') {
+            where.twoFactorEnabled = true;
+        } else if (twoFactorFilter === 'disabled') {
+            where.twoFactorEnabled = false;
+        } else if (twoFactorFilter === 'required') {
+            where.twoFactorRequired = true;
+        }
+
         const [users, total] = await Promise.all([
             prisma.user.findMany({
                 where,
@@ -484,14 +519,21 @@ router.get('/users', async (req, res) => {
                     isVerified: true,
                     createdAt: true,
                     lastLoginAt: true,
-                    referralDisabled: true,           // 🆕
-                    referralDisabledAt: true,         // 🆕
-                    referralDisabledReason: true,     // 🆕
-                    referralEarnings: true,           // 🆕
+                    referralDisabled: true,
+                    referralDisabledAt: true,
+                    referralDisabledReason: true,
+                    referralEarnings: true,
+                    // 🆕 Pola 2FA
+                    twoFactorEnabled: true,
+                    twoFactorMethod: true,
+                    twoFactorRequired: true,
+                    twoFactorEnabledAt: true,
+                    twoFactorLastUsedAt: true,
                     _count: {
                         select: { 
                             links: true,
-                            payouts: true
+                            payouts: true,
+                            webAuthnCredentials: true  // 🆕
                         }
                     }
                 },
@@ -502,13 +544,55 @@ router.get('/users', async (req, res) => {
             prisma.user.count({ where })
         ]);
 
+        // 🆕 Pobierz liczbę niewykorzystanych backup codes dla każdego użytkownika
+        const usersWithTwoFactorInfo = await Promise.all(
+            users.map(async (user) => {
+                let backupCodesRemaining = 0;
+                
+                if (user.twoFactorEnabled) {
+                    try {
+                        backupCodesRemaining = await prisma.backupCode.count({
+                            where: {
+                                userId: user.id,
+                                usedAt: null
+                            }
+                        });
+                    } catch (e) {
+                        // Tabela może nie istnieć
+                    }
+                }
+
+                return {
+                    id: user.id,
+                    email: user.email,
+                    isActive: user.isActive,
+                    isAdmin: user.isAdmin,
+                    balance: parseFloat(user.balance || 0),
+                    totalEarned: parseFloat(user.totalEarned || 0),
+                    isVerified: user.isVerified,
+                    createdAt: user.createdAt,
+                    lastLoginAt: user.lastLoginAt,
+                    referralDisabled: user.referralDisabled,
+                    referralEarnings: parseFloat(user.referralEarnings || 0),
+                    linksCount: user._count.links,
+                    payoutsCount: user._count.payouts,
+                    // 🆕 Dane 2FA
+                    twoFactor: {
+                        enabled: user.twoFactorEnabled,
+                        methods: user.twoFactorMethod || [],
+                        required: user.twoFactorRequired,
+                        enabledAt: user.twoFactorEnabledAt,
+                        lastUsedAt: user.twoFactorLastUsedAt,
+                        webAuthnCount: user._count.webAuthnCredentials,
+                        backupCodesRemaining
+                    }
+                };
+            })
+        );
+
         res.json({
             success: true,
-            users: users.map(user => ({
-                ...user,
-                linksCount: user._count.links,
-                payoutsCount: user._count.payouts
-            })),
+            users: usersWithTwoFactorInfo,
             pagination: {
                 page: parseInt(page),
                 limit: parseInt(limit),
@@ -540,10 +624,19 @@ router.get('/users/:id', async (req, res) => {
                 lastLoginAt: true,
                 registrationIp: true,
                 lastLoginIp: true,
+                // 🆕 Pola 2FA
+                twoFactorEnabled: true,
+                twoFactorMethod: true,
+                twoFactorRequired: true,
+                twoFactorRequiredAt: true,
+                twoFactorRequiredBy: true,
+                twoFactorEnabledAt: true,
+                twoFactorLastUsedAt: true,
                 _count: {
                     select: { 
                         links: true,
-                        payouts: true
+                        payouts: true,
+                        webAuthnCredentials: true
                     }
                 },
                 links: {
@@ -561,6 +654,16 @@ router.get('/users/:id', async (req, res) => {
                 payouts: {
                     take: 5,
                     orderBy: { createdAt: 'desc' }
+                },
+                // 🆕 Klucze WebAuthn
+                webAuthnCredentials: {
+                    select: {
+                        id: true,
+                        deviceName: true,
+                        credentialDeviceType: true,
+                        lastUsedAt: true,
+                        createdAt: true
+                    }
                 }
             }
         });
@@ -583,6 +686,28 @@ router.get('/users/:id', async (req, res) => {
             lastLoginIp = user.lastLoginIp ? maskIp(user.lastLoginIp) : null;
         }
 
+        // 🆕 Pobierz backup codes info
+        let backupCodesInfo = { total: 0, remaining: 0 };
+        try {
+            const [total, remaining] = await Promise.all([
+                prisma.backupCode.count({ where: { userId: id } }),
+                prisma.backupCode.count({ where: { userId: id, usedAt: null } })
+            ]);
+            backupCodesInfo = { total, remaining, used: total - remaining };
+        } catch (e) {
+            // Tabela może nie istnieć
+        }
+
+        // 🆕 Pobierz admina który wymusił 2FA
+        let requiredByAdmin = null;
+        if (user.twoFactorRequiredBy) {
+            const admin = await prisma.user.findUnique({
+                where: { id: user.twoFactorRequiredBy },
+                select: { email: true }
+            });
+            requiredByAdmin = admin?.email || null;
+        }
+
         res.json({
             success: true,
             user: {
@@ -590,7 +715,19 @@ router.get('/users/:id', async (req, res) => {
                 registrationIp,
                 lastLoginIp,
                 linksCount: user._count.links,
-                payoutsCount: user._count.payouts
+                payoutsCount: user._count.payouts,
+                // 🆕 Szczegóły 2FA
+                twoFactor: {
+                    enabled: user.twoFactorEnabled,
+                    methods: user.twoFactorMethod || [],
+                    required: user.twoFactorRequired,
+                    requiredAt: user.twoFactorRequiredAt,
+                    requiredBy: requiredByAdmin,
+                    enabledAt: user.twoFactorEnabledAt,
+                    lastUsedAt: user.twoFactorLastUsedAt,
+                    webAuthnCredentials: user.webAuthnCredentials,
+                    backupCodes: backupCodesInfo
+                }
             }
         });
     } catch (error) {
@@ -715,12 +852,456 @@ router.delete('/users/:id', async (req, res) => {
             prisma.visit.deleteMany({ where: { link: { userId: id } } }),
             prisma.link.deleteMany({ where: { userId: id } }),
             prisma.payout.deleteMany({ where: { userId: id } }),
+            // 🆕 Usuń dane 2FA
+            prisma.webAuthnCredential.deleteMany({ where: { userId: id } }),
+            prisma.backupCode.deleteMany({ where: { userId: id } }),
+            prisma.twoFactorLog.deleteMany({ where: { userId: id } }),
             prisma.user.delete({ where: { id } })
         ]);
 
         res.json({ success: true, message: 'Użytkownik i wszystkie jego dane zostały usunięte' });
     } catch (error) {
         console.error('Błąd usuwania użytkownika:', error);
+        res.status(500).json({ success: false, message: 'Błąd serwera' });
+    }
+});
+
+// ======================
+// 🆕 ZARZĄDZANIE 2FA UŻYTKOWNIKÓW
+// ======================
+
+// Wyślij email z zaleceniem 2FA
+router.post('/users/:id/recommend-2fa', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const user = await prisma.user.findUnique({
+            where: { id },
+            select: {
+                email: true,
+                twoFactorEnabled: true,
+                isActive: true
+            }
+        });
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'Użytkownik nie znaleziony' });
+        }
+
+        if (!user.isActive) {
+            return res.status(400).json({ success: false, message: 'Użytkownik jest nieaktywny' });
+        }
+
+        if (user.twoFactorEnabled) {
+            return res.status(400).json({ success: false, message: 'Użytkownik ma już włączone 2FA' });
+        }
+
+        // Wyślij email za pomocą emailUtils
+        try {
+            await emailUtils.sendTwoFactorRecommendation(user.email);
+        } catch (emailError) {
+            console.error('Błąd wysyłania emaila:', emailError);
+            // Kontynuuj mimo błędu emaila
+        }
+
+        // Zapisz log
+        try {
+            await prisma.twoFactorLog.create({
+                data: {
+                    userId: id,
+                    action: 'ADMIN_REQUIRED',
+                    success: true,
+                    ipAddress: req.ip,
+                    userAgent: req.headers['user-agent']
+                }
+            });
+        } catch (logError) {
+            console.error('Błąd zapisywania logu 2FA:', logError);
+        }
+
+        res.json({ 
+            success: true,
+            message: 'Email z zaleceniem 2FA został wysłany' 
+        });
+
+    } catch (error) {
+        console.error('Błąd wysyłania zalecenia 2FA:', error);
+        res.status(500).json({ success: false, message: 'Błąd serwera' });
+    }
+});
+
+// Wymuś 2FA dla użytkownika
+router.post('/users/:id/require-2fa', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const adminId = req.userId;
+
+        const user = await prisma.user.findUnique({
+            where: { id },
+            select: {
+                email: true,
+                twoFactorEnabled: true,
+                twoFactorRequired: true,
+                isActive: true
+            }
+        });
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'Użytkownik nie znaleziony' });
+        }
+
+        if (user.twoFactorRequired) {
+            return res.status(400).json({ success: false, message: '2FA jest już wymagane dla tego użytkownika' });
+        }
+
+        // Ustaw wymóg 2FA
+        if (twoFactorService) {
+            await twoFactorService.requireTwoFactor(id, adminId);
+        } else {
+            await prisma.user.update({
+                where: { id },
+                data: {
+                    twoFactorRequired: true,
+                    twoFactorRequiredAt: new Date(),
+                    twoFactorRequiredBy: adminId
+                }
+            });
+        }
+
+        // Wyślij email informacyjny
+        try {
+            await emailUtils.sendTwoFactorRequired(user.email);
+        } catch (emailError) {
+            console.error('Błąd wysyłania emaila:', emailError);
+        }
+
+        // Zapisz log
+        try {
+            await prisma.twoFactorLog.create({
+                data: {
+                    userId: id,
+                    action: 'ADMIN_REQUIRED',
+                    success: true,
+                    ipAddress: req.ip
+                }
+            });
+        } catch (logError) {
+            console.error('Błąd zapisywania logu:', logError);
+        }
+
+        res.json({ 
+            success: true,
+            message: '2FA zostało wymuszone dla użytkownika' 
+        });
+
+    } catch (error) {
+        console.error('Błąd wymuszania 2FA:', error);
+        res.status(500).json({ success: false, message: 'Błąd serwera' });
+    }
+});
+
+// Usuń wymóg 2FA
+router.delete('/users/:id/require-2fa', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const user = await prisma.user.findUnique({
+            where: { id },
+            select: { twoFactorRequired: true }
+        });
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'Użytkownik nie znaleziony' });
+        }
+
+        if (!user.twoFactorRequired) {
+            return res.status(400).json({ success: false, message: '2FA nie jest wymagane dla tego użytkownika' });
+        }
+
+        if (twoFactorService) {
+            await twoFactorService.removeRequireTwoFactor(id);
+        } else {
+            await prisma.user.update({
+                where: { id },
+                data: {
+                    twoFactorRequired: false,
+                    twoFactorRequiredAt: null,
+                    twoFactorRequiredBy: null
+                }
+            });
+        }
+
+        res.json({ 
+            success: true,
+            message: 'Wymóg 2FA został usunięty' 
+        });
+
+    } catch (error) {
+        console.error('Błąd usuwania wymogu 2FA:', error);
+        res.status(500).json({ success: false, message: 'Błąd serwera' });
+    }
+});
+
+// Resetuj 2FA użytkownika
+router.post('/users/:id/reset-2fa', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const adminId = req.userId;
+        const { sendEmail = true } = req.body;
+
+        const user = await prisma.user.findUnique({
+            where: { id },
+            select: {
+                email: true,
+                twoFactorEnabled: true
+            }
+        });
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'Użytkownik nie znaleziony' });
+        }
+
+        if (!user.twoFactorEnabled) {
+            return res.status(400).json({ success: false, message: 'Użytkownik nie ma włączonego 2FA' });
+        }
+
+        // Resetuj 2FA
+        if (twoFactorService) {
+            await twoFactorService.adminResetTwoFactor(id, adminId);
+        } else {
+            await prisma.$transaction([
+                prisma.webAuthnCredential.deleteMany({ where: { userId: id } }),
+                prisma.backupCode.deleteMany({ where: { userId: id } }),
+                prisma.user.update({
+                    where: { id },
+                    data: {
+                        twoFactorEnabled: false,
+                        twoFactorSecret: null,
+                        twoFactorMethod: [],
+                        twoFactorEnabledAt: null
+                    }
+                })
+            ]);
+
+            // Zapisz log
+            await prisma.twoFactorLog.create({
+                data: {
+                    userId: id,
+                    action: 'ADMIN_RESET',
+                    success: true,
+                    ipAddress: req.ip
+                }
+            });
+        }
+
+        // Wyślij email informacyjny
+        if (sendEmail) {
+            try {
+                await emailUtils.sendTwoFactorReset(user.email);
+            } catch (emailError) {
+                console.error('Błąd wysyłania emaila:', emailError);
+            }
+        }
+
+        res.json({ 
+            success: true,
+            message: '2FA użytkownika zostało zresetowane' 
+        });
+
+    } catch (error) {
+        console.error('Błąd resetowania 2FA:', error);
+        res.status(500).json({ success: false, message: 'Błąd serwera' });
+    }
+});
+
+// Szczegółowy status 2FA użytkownika
+router.get('/users/:id/2fa-status', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const user = await prisma.user.findUnique({
+            where: { id },
+            select: {
+                id: true,
+                email: true,
+                twoFactorEnabled: true,
+                twoFactorMethod: true,
+                twoFactorRequired: true,
+                twoFactorRequiredAt: true,
+                twoFactorRequiredBy: true,
+                twoFactorEnabledAt: true,
+                twoFactorLastUsedAt: true,
+                webAuthnCredentials: {
+                    select: {
+                        id: true,
+                        deviceName: true,
+                        credentialDeviceType: true,
+                        lastUsedAt: true,
+                        createdAt: true
+                    }
+                }
+            }
+        });
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'Użytkownik nie znaleziony' });
+        }
+
+        // Pobierz backup codes
+        const [totalBackupCodes, unusedBackupCodes] = await Promise.all([
+            prisma.backupCode.count({ where: { userId: id } }),
+            prisma.backupCode.count({ where: { userId: id, usedAt: null } })
+        ]);
+
+        // Pobierz ostatnie logi 2FA
+        const recentLogs = await prisma.twoFactorLog.findMany({
+            where: { userId: id },
+            orderBy: { createdAt: 'desc' },
+            take: 10,
+            select: {
+                action: true,
+                method: true,
+                success: true,
+                ipAddress: true,
+                failReason: true,
+                createdAt: true
+            }
+        });
+
+        // Pobierz admina który wymusił 2FA
+        let requiredByAdmin = null;
+        if (user.twoFactorRequiredBy) {
+            const admin = await prisma.user.findUnique({
+                where: { id: user.twoFactorRequiredBy },
+                select: { email: true }
+            });
+            requiredByAdmin = admin?.email || null;
+        }
+
+        res.json({
+            success: true,
+            data: {
+                userId: user.id,
+                email: user.email,
+                twoFactor: {
+                    enabled: user.twoFactorEnabled,
+                    methods: user.twoFactorMethod || [],
+                    required: user.twoFactorRequired,
+                    requiredAt: user.twoFactorRequiredAt,
+                    requiredBy: requiredByAdmin,
+                    enabledAt: user.twoFactorEnabledAt,
+                    lastUsedAt: user.twoFactorLastUsedAt
+                },
+                webAuthnCredentials: user.webAuthnCredentials,
+                backupCodes: {
+                    total: totalBackupCodes,
+                    remaining: unusedBackupCodes,
+                    used: totalBackupCodes - unusedBackupCodes
+                },
+                recentLogs
+            }
+        });
+
+    } catch (error) {
+        console.error('Błąd pobierania statusu 2FA:', error);
+        res.status(500).json({ success: false, message: 'Błąd serwera' });
+    }
+});
+
+// Statystyki 2FA dla całej platformy
+router.get('/2fa-stats', async (req, res) => {
+    try {
+        const [
+            totalUsers,
+            usersWithTwoFactor,
+            usersWithRequired,
+            totalWebAuthnCredentials,
+            totalBackupCodesUsed
+        ] = await Promise.all([
+            prisma.user.count(),
+            prisma.user.count({ where: { twoFactorEnabled: true } }),
+            prisma.user.count({ where: { twoFactorRequired: true } }),
+            prisma.webAuthnCredential.count(),
+            prisma.backupCode.count({ where: { usedAt: { not: null } } })
+        ]);
+
+        // Metody 2FA
+        const usersWithTotp = await prisma.user.count({
+            where: {
+                twoFactorEnabled: true,
+                twoFactorMethod: { has: 'TOTP' }
+            }
+        });
+
+        const usersWithWebAuthn = await prisma.user.count({
+            where: {
+                twoFactorEnabled: true,
+                twoFactorMethod: { has: 'WEBAUTHN' }
+            }
+        });
+
+        // Logi z ostatnich 30 dni
+        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+        
+        const recentLogs = await prisma.twoFactorLog.groupBy({
+            by: ['action', 'success'],
+            where: { createdAt: { gte: thirtyDaysAgo } },
+            _count: true
+        });
+
+        const logStats = {
+            verifications: { successful: 0, failed: 0 },
+            enablements: 0,
+            disablements: 0,
+            adminResets: 0,
+            backupCodesUsed: 0
+        };
+
+        recentLogs.forEach(log => {
+            if (log.action === 'VERIFIED') {
+                if (log.success) logStats.verifications.successful += log._count;
+                else logStats.verifications.failed += log._count;
+            } else if (log.action === 'ENABLED') {
+                logStats.enablements += log._count;
+            } else if (log.action === 'DISABLED') {
+                logStats.disablements += log._count;
+            } else if (log.action === 'ADMIN_RESET') {
+                logStats.adminResets += log._count;
+            } else if (log.action === 'BACKUP_USED') {
+                logStats.backupCodesUsed += log._count;
+            }
+        });
+
+        res.json({
+            success: true,
+            data: {
+                overview: {
+                    totalUsers,
+                    usersWithTwoFactor,
+                    usersWithoutTwoFactor: totalUsers - usersWithTwoFactor,
+                    adoptionRate: totalUsers > 0 
+                        ? ((usersWithTwoFactor / totalUsers) * 100).toFixed(1) 
+                        : 0
+                },
+                methods: {
+                    totp: usersWithTotp,
+                    webauthn: usersWithWebAuthn
+                },
+                enforcement: {
+                    usersWithRequired,
+                    usersCompliant: usersWithTwoFactor,
+                    usersPending: Math.max(0, usersWithRequired - usersWithTwoFactor)
+                },
+                credentials: {
+                    totalWebAuthnCredentials,
+                    totalBackupCodesUsed
+                },
+                last30Days: logStats
+            }
+        });
+
+    } catch (error) {
+        console.error('Błąd pobierania statystyk 2FA:', error);
         res.status(500).json({ success: false, message: 'Błąd serwera' });
     }
 });
@@ -1000,7 +1581,6 @@ router.patch('/payouts/:id', async (req, res) => {
 
 // Alias PUT dla kompatybilności
 router.put('/payouts/:id', async (req, res) => {
-    // Przekieruj do PATCH
     req.method = 'PATCH';
     return router.handle(req, res);
 });
@@ -1061,7 +1641,6 @@ router.get('/messages', async (req, res) => {
     }
 });
 
-// PATCH - oznacz jako przeczytane
 router.patch('/messages/:id/read', async (req, res) => {
     try {
         const { id } = req.params;
@@ -1084,7 +1663,6 @@ router.patch('/messages/:id/read', async (req, res) => {
             data: { isRead: true }
         });
         
-        // Wyślij powiadomienie email
         if (sendNotification) {
             emailUtils.sendMessageReadNotification(
                 message.email,
@@ -1100,7 +1678,6 @@ router.patch('/messages/:id/read', async (req, res) => {
     }
 });
 
-// PUT - alias dla kompatybilności z frontendem
 router.put('/messages/:id/read', async (req, res) => {
     try {
         const { id } = req.params;
@@ -1123,7 +1700,6 @@ router.put('/messages/:id/read', async (req, res) => {
             data: { isRead: true }
         });
         
-        // Wyślij powiadomienie email
         if (sendNotification) {
             emailUtils.sendMessageReadNotification(
                 message.email,
@@ -1167,6 +1743,7 @@ router.get('/encryption-status', async (req, res) => {
     try {
         const isValid = validateEncryptionKey();
         const hasAdsterraToken = !!process.env.ADSTERRA_API_TOKEN;
+        const hasTwoFactorKey = !!process.env.TWO_FACTOR_ENCRYPTION_KEY;  // 🆕
         
         res.json({
             success: true,
@@ -1178,6 +1755,11 @@ router.get('/encryption-status', async (req, res) => {
             adsterra: {
                 configured: hasAdsterraToken,
                 status: hasAdsterraToken ? 'Token ustawiony' : 'Brak tokenu ADSTERRA_API_TOKEN'
+            },
+            // 🆕 Status 2FA
+            twoFactor: {
+                configured: hasTwoFactorKey,
+                status: hasTwoFactorKey ? 'Klucz szyfrowania 2FA ustawiony' : 'Brak TWO_FACTOR_ENCRYPTION_KEY'
             }
         });
     } catch (error) {
@@ -1417,67 +1999,18 @@ router.post('/search-by-ip', async (req, res) => {
 });
 
 // ======================
-// ADSTERRA (placeholder)
-// ======================
-
-// Odśwież dane Adsterra
-router.post('/adsterra-stats/refresh', async (req, res) => {
-    try {
-        // Na razie zwracamy puste dane
-        // Później dodasz prawdziwą integrację z Adsterra API
-        res.json({ 
-            success: true, 
-            message: 'Adsterra nie skonfigurowane',
-            data: null
-        });
-    } catch (error) {
-        res.status(500).json({ success: false, error: 'Błąd' });
-    }
-});
-
-// Status Adsterra
-router.get('/adsterra-stats', async (req, res) => {
-    try {
-        const hasToken = !!process.env.ADSTERRA_API_TOKEN;
-        
-        if (!hasToken) {
-            return res.json({
-                success: true,
-                configured: false,
-                message: 'Ustaw ADSTERRA_API_TOKEN w Railway'
-            });
-        }
-        
-        // Placeholder - później dodasz prawdziwą logikę
-        res.json({
-            success: true,
-            configured: true,
-            today: 0,
-            last7Days: 0,
-            monthlyRevenue: 0,
-            dailyStats: [],
-            lastUpdated: new Date().toISOString()
-        });
-    } catch (error) {
-        res.status(500).json({ success: false, error: 'Błąd' });
-    }
-});
-
-// ======================
-// ZARZĄDZANIE STAWKAMI CPM (używa linkService)
+// ZARZĄDZANIE STAWKAMI CPM
 // ======================
 
 const linkService = require('../services/linkService');
 const earningsService = require('../services/earningsService');
 
-// Pobierz wszystkie stawki CPM (dla admina)
 router.get('/cpm-rates', async (req, res) => {
     try {
         const rates = await linkService.getAllRates();
         const commission = await linkService.getPlatformCommission();
 
         const enrichedRates = rates.map(rate => {
-            // Prisma Decimal wymaga konwersji przez Number() lub toString()
             const grossCpm = Number(rate.cpm_rate) || Number(rate.baseCpm) || 0;
             const userCpm = grossCpm * (1 - commission);
             
@@ -1510,7 +2043,6 @@ router.get('/cpm-rates', async (req, res) => {
     }
 });
 
-// Aktualizuj stawkę CPM dla kraju
 router.put('/cpm-rates/:countryCode', async (req, res) => {
     try {
         const { countryCode } = req.params;
@@ -1523,7 +2055,6 @@ router.put('/cpm-rates/:countryCode', async (req, res) => {
             });
         }
 
-        // Użyj linkService do aktualizacji (obsługuje historię i cache)
         const updated = await linkService.updateRate(
             countryCode.toUpperCase(),
             parseFloat(baseCpm),
@@ -1552,7 +2083,6 @@ router.put('/cpm-rates/:countryCode', async (req, res) => {
     }
 });
 
-// Statystyki zarobków per kraj
 router.get('/earnings-by-country', async (req, res) => {
     try {
         const { days = 30 } = req.query;
@@ -1578,7 +2108,6 @@ router.get('/earnings-by-country', async (req, res) => {
     }
 });
 
-// Historia zmian stawek CPM
 router.get('/cpm-rates/history', async (req, res) => {
     try {
         const { countryCode, limit = 50 } = req.query;
@@ -1601,10 +2130,9 @@ router.get('/cpm-rates/history', async (req, res) => {
 });
 
 // ======================
-// 🆕 FRAUD ALERTS - NOWE ENDPOINTY
+// FRAUD ALERTS
 // ======================
 
-// Pobierz listę alertów fraudu
 router.get('/fraud-alerts', async (req, res) => {
     try {
         const {
@@ -1637,7 +2165,6 @@ router.get('/fraud-alerts', async (req, res) => {
     }
 });
 
-// Statystyki alertów fraudu
 router.get('/fraud-alerts/stats', async (req, res) => {
     try {
         const stats = await ReferralService.getFraudAlertStats();
@@ -1647,7 +2174,7 @@ router.get('/fraud-alerts/stats', async (req, res) => {
             data: stats
         });
 
-    } catch (error) {
+        } catch (error) {
         console.error('Get fraud stats error:', error);
         res.status(500).json({
             success: false,
@@ -1656,7 +2183,6 @@ router.get('/fraud-alerts/stats', async (req, res) => {
     }
 });
 
-// Szczegóły pojedynczego alertu
 router.get('/fraud-alerts/:id', async (req, res) => {
     try {
         const { id } = req.params;
@@ -1718,7 +2244,6 @@ router.get('/fraud-alerts/:id', async (req, res) => {
     }
 });
 
-// Rozwiąż alert (akcja admina)
 router.post('/fraud-alerts/:id/resolve', async (req, res) => {
     try {
         const { id } = req.params;
@@ -1760,7 +2285,6 @@ router.post('/fraud-alerts/:id/resolve', async (req, res) => {
     }
 });
 
-// Włącz/wyłącz zaproszenia użytkownika
 router.post('/users/:id/toggle-referral', async (req, res) => {
     try {
         const { id } = req.params;
@@ -1805,7 +2329,6 @@ router.post('/users/:id/toggle-referral', async (req, res) => {
     }
 });
 
-// Rozszerzone statystyki referali
 router.get('/referral-stats', async (req, res) => {
     try {
         const stats = await ReferralService.getAdminStats();
@@ -1824,7 +2347,6 @@ router.get('/referral-stats', async (req, res) => {
     }
 });
 
-// Wyłącz polecenia i wyzeruj zarobki użytkownika
 router.post('/users/:id/disable-referral-reset-earnings', async (req, res) => {
     try {
         const { id } = req.params;
@@ -1841,7 +2363,6 @@ router.post('/users/:id/disable-referral-reset-earnings', async (req, res) => {
             });
         }
 
-        // Wyłącz polecenia i wyzeruj zarobki z poleceń
         await prisma.user.update({
             where: { id },
             data: {

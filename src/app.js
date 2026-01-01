@@ -55,7 +55,8 @@ const payoutRoutes = require('./routes/payoutRoutes');
 const contactRoutes = require('./routes/contactRoutes');
 const cpmRoutes = require('./routes/cpmRoutes');
 const securityRoutes = require('./routes/securityRoutes');
-const referralRoutes = require('./routes/referralRoutes'); // 🆕 NOWE
+const referralRoutes = require('./routes/referralRoutes');
+const twoFactorRoutes = require('./routes/twoFactorRoutes'); // 🆕 2FA
 
 // Health check
 app.get('/health', (req, res) => {
@@ -64,7 +65,7 @@ app.get('/health', (req, res) => {
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
         database: 'PostgreSQL (Supabase)',
-        version: '1.3.0'
+        version: '1.4.0'  // 🆕 Bump wersji
     });
 });
 
@@ -72,7 +73,7 @@ app.get('/health', (req, res) => {
 app.get('/api', (req, res) => {
     res.json({
         message: 'AngoraLinks API',
-        version: '1.3.0',
+        version: '1.4.0',
         endpoints: {
             health: '/health',
             auth: '/api/auth/*',
@@ -80,7 +81,8 @@ app.get('/api', (req, res) => {
             stats: '/api/stats/*',
             payouts: '/api/payouts/*',
             cpm: '/api/cpm/*',
-            referrals: '/api/referrals/*', // 🆕 NOWE
+            referrals: '/api/referrals/*',
+            twoFactor: '/api/2fa/*',  // 🆕 NOWE
             security: '/api/admin/security/*'
         }
     });
@@ -97,7 +99,8 @@ app.use('/api/payouts', payoutRoutes);
 app.use('/api/contact', contactRoutes);
 app.use('/api/cpm', cpmRoutes);
 app.use('/api/admin/security', securityRoutes);
-app.use('/api/referrals', referralRoutes); // 🆕 NOWE
+app.use('/api/referrals', referralRoutes);
+app.use('/api/2fa', twoFactorRoutes); // 🆕 2FA
 
 // ======================
 // OBSŁUGA BŁĘDÓW
@@ -135,7 +138,8 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('🚀 AngoraLinks API uruchomiony!');
     console.log(`📍 Port: ${PORT}`);
     console.log(`📍 Host: 0.0.0.0`);
-    console.log(`📍 Wersja: 1.3.0`);
+    console.log(`📍 Wersja: 1.4.0`);
+    console.log(`🔐 2FA: ${process.env.TWO_FACTOR_ENCRYPTION_KEY ? 'Skonfigurowane' : 'BRAK KLUCZA!'}`);
     console.log('====================================');
 });
 
