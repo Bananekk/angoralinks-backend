@@ -252,7 +252,7 @@ router.post('/register', async (req, res) => {
 });
 
 // =====================================
-// 🆕 POST /api/auth/login - Logowanie Z OBSŁUGĄ 2FA
+// POST /api/auth/login - Logowanie Z OBSŁUGĄ 2FA
 // =====================================
 router.post('/login', async (req, res) => {
     try {
@@ -262,7 +262,7 @@ router.post('/login', async (req, res) => {
             return res.status(400).json({ error: 'Email i hasło są wymagane' });
         }
         
-        // 🆕 Rozszerzone pobieranie danych z polami 2FA
+        // Rozszerzone pobieranie danych z polami 2FA
         const user = await prisma.user.findUnique({
             where: { email: email.toLowerCase() },
             select: {
@@ -275,7 +275,7 @@ router.post('/login', async (req, res) => {
                 balance: true,
                 totalEarned: true,
                 referralCode: true,
-                // 🆕 Pola 2FA
+                // Pola 2FA
                 twoFactorEnabled: true,
                 twoFactorMethod: true,
                 twoFactorRequired: true
@@ -308,7 +308,7 @@ router.post('/login', async (req, res) => {
         const userAgent = getUserAgent(req);
 
         // ========================================
-        // 🆕 SPRAWDZENIE 2FA
+        // SPRAWDZENIE 2FA
         // ========================================
 
         // Przypadek 1: 2FA wymagane przez admina, ale nie skonfigurowane
@@ -406,14 +406,17 @@ router.post('/login', async (req, res) => {
 });
 
 // =====================================
-// 🆕 POST /api/auth/2fa/verify - Weryfikacja 2FA przy logowaniu
+// POST /api/auth/2fa/verify - Weryfikacja 2FA przy logowaniu
 // =====================================
 router.post('/2fa/verify', async (req, res) => {
     try {
         const { challengeToken, code, method, response } = req.body;
 
         if (!challengeToken) {
-            return res.status(400).json({ error: 'Token weryfikacyjny jest wymagany' });
+            return res.status(400).json({ 
+                success: false,
+                error: 'Token weryfikacyjny jest wymagany' 
+            });
         }
 
         // Zweryfikuj challengeToken
@@ -421,12 +424,18 @@ router.post('/2fa/verify', async (req, res) => {
         try {
             decoded = authService.verifyToken(challengeToken);
         } catch (tokenError) {
-            return res.status(401).json({ error: 'Token wygasł. Zaloguj się ponownie.' });
+            return res.status(401).json({ 
+                success: false,
+                error: 'Token wygasł. Zaloguj się ponownie.' 
+            });
         }
 
         // Sprawdź czy token jest do weryfikacji 2FA
         if (decoded.purpose && decoded.purpose !== '2fa-verify') {
-            return res.status(401).json({ error: 'Nieprawidłowy token' });
+            return res.status(401).json({ 
+                success: false,
+                error: 'Nieprawidłowy token' 
+            });
         }
 
         const userId = decoded.userId || decoded.id;
@@ -447,20 +456,30 @@ router.post('/2fa/verify', async (req, res) => {
         });
 
         if (!user) {
-            return res.status(404).json({ error: 'Użytkownik nie znaleziony' });
+            return res.status(404).json({ 
+                success: false,
+                error: 'Użytkownik nie znaleziony' 
+            });
         }
 
         if (!user.isActive) {
-            return res.status(403).json({ error: 'Konto zablokowane' });
+            return res.status(403).json({ 
+                success: false,
+                error: 'Konto zablokowane' 
+            });
         }
 
         if (!user.twoFactorEnabled) {
-            return res.status(400).json({ error: '2FA nie jest włączone dla tego konta' });
+            return res.status(400).json({ 
+                success: false,
+                error: '2FA nie jest włączone dla tego konta' 
+            });
         }
 
         const clientIp = getClientIp(req);
         const userAgent = getUserAgent(req);
         let verified = false;
+        let usedMethod = method;
 
         // ========================================
         // Weryfikacja w zależności od metody
@@ -468,29 +487,48 @@ router.post('/2fa/verify', async (req, res) => {
         
         if (method === 'TOTP' || (!method && code && code.length === 6)) {
             // Weryfikacja kodem TOTP
+            usedMethod = 'TOTP';
+            
             if (!code) {
-                return res.status(400).json({ error: 'Kod weryfikacyjny jest wymagany' });
+                return res.status(400).json({ 
+                    success: false,
+                    error: 'Kod weryfikacyjny jest wymagany' 
+                });
             }
 
             if (!twoFactorService) {
-                return res.status(500).json({ error: 'Serwis 2FA niedostępny' });
+                return res.status(500).json({ 
+                    success: false,
+                    error: 'Serwis 2FA niedostępny' 
+                });
             }
 
             try {
                 verified = await twoFactorService.verifyTwoFactorCode(userId, code, clientIp, userAgent);
             } catch (verifyError) {
                 console.error('TOTP verification error:', verifyError);
-                return res.status(400).json({ error: 'Błąd weryfikacji kodu' });
+                return res.status(400).json({ 
+                    success: false,
+                    error: 'Błąd weryfikacji kodu' 
+                });
             }
 
         } else if (method === 'WEBAUTHN') {
             // Weryfikacja WebAuthn
+            usedMethod = 'WEBAUTHN';
+            
             if (!response) {
-                return res.status(400).json({ error: 'Odpowiedź WebAuthn jest wymagana' });
+                return res.status(400).json({ 
+                    success: false,
+                    error: 'Odpowiedź WebAuthn jest wymagana' 
+                });
             }
 
             if (!twoFactorService) {
-                return res.status(500).json({ error: 'Serwis 2FA niedostępny' });
+                return res.status(500).json({ 
+                    success: false,
+                    error: 'Serwis 2FA niedostępny' 
+                });
             }
 
             try {
@@ -498,17 +536,40 @@ router.post('/2fa/verify', async (req, res) => {
                 verified = result.verified;
             } catch (webauthnError) {
                 console.error('WebAuthn verification error:', webauthnError);
-                return res.status(400).json({ error: 'Weryfikacja klucza nie powiodła się' });
+                
+                // Lepsze komunikaty błędów
+                let errorMessage = 'Weryfikacja klucza nie powiodła się';
+                
+                if (webauthnError.message?.includes('Challenge wygasł')) {
+                    errorMessage = 'Sesja wygasła. Spróbuj ponownie.';
+                } else if (webauthnError.message?.includes('Nieznany klucz')) {
+                    errorMessage = 'Ten klucz nie jest zarejestrowany dla tego konta';
+                } else if (webauthnError.message?.includes('counter')) {
+                    errorMessage = 'Wykryto możliwe sklonowanie klucza. Skontaktuj się z supportem.';
+                }
+                
+                return res.status(400).json({ 
+                    success: false,
+                    error: errorMessage 
+                });
             }
 
         } else if (method === 'BACKUP_CODE' || (code && code.length === 8)) {
             // Weryfikacja kodem zapasowym
+            usedMethod = 'BACKUP_CODE';
+            
             if (!code) {
-                return res.status(400).json({ error: 'Kod zapasowy jest wymagany' });
+                return res.status(400).json({ 
+                    success: false,
+                    error: 'Kod zapasowy jest wymagany' 
+                });
             }
 
             if (!twoFactorService) {
-                return res.status(500).json({ error: 'Serwis 2FA niedostępny' });
+                return res.status(500).json({ 
+                    success: false,
+                    error: 'Serwis 2FA niedostępny' 
+                });
             }
 
             try {
@@ -522,28 +583,45 @@ router.post('/2fa/verify', async (req, res) => {
                 }
             } catch (backupError) {
                 console.error('Backup code verification error:', backupError);
-                return res.status(400).json({ error: 'Błąd weryfikacji kodu zapasowego' });
+                return res.status(400).json({ 
+                    success: false,
+                    error: 'Błąd weryfikacji kodu zapasowego' 
+                });
             }
         } else {
-            return res.status(400).json({ error: 'Nieobsługiwana metoda weryfikacji' });
+            return res.status(400).json({ 
+                success: false,
+                error: 'Nieobsługiwana metoda weryfikacji' 
+            });
         }
 
         if (!verified) {
             // Zapisz nieudaną próbę
             if (twoFactorService) {
                 try {
-                    await twoFactorService.logTwoFactorAction(userId, 'FAILED', method || 'TOTP', false, clientIp, userAgent, 'Nieprawidłowy kod');
+                    await twoFactorService.logTwoFactorAction(
+                        userId, 
+                        'FAILED', 
+                        usedMethod, 
+                        false, 
+                        clientIp, 
+                        userAgent, 
+                        'Nieprawidłowy kod'
+                    );
                 } catch (logError) {
                     console.error('Error logging failed 2FA attempt:', logError);
                 }
             }
-            return res.status(401).json({ error: 'Nieprawidłowy kod weryfikacyjny' });
+            return res.status(401).json({ 
+                success: false,
+                error: 'Nieprawidłowy kod weryfikacyjny' 
+            });
         }
 
         // ========================================
         // 2FA zweryfikowane - wydaj pełny token
         // ========================================
-        console.log('✅ 2FA verified for:', user.email);
+        console.log('✅ 2FA verified for:', user.email, 'Method:', usedMethod);
 
         const encryptedIp = encrypt(clientIp);
         let ipHash = null;
@@ -561,13 +639,13 @@ router.post('/2fa/verify', async (req, res) => {
             }
         });
 
-        // Zapisz log
+        // Zapisz log logowania
         try {
             await prisma.ipLog.create({
                 data: {
                     userId: user.id,
                     encryptedIp: encryptedIp || 'unknown',
-                    action: 'LOGIN_2FA',
+                    action: `LOGIN_2FA_${usedMethod}`,
                     userAgent: userAgent?.substring(0, 500)
                 }
             });
@@ -592,44 +670,92 @@ router.post('/2fa/verify', async (req, res) => {
 
     } catch (error) {
         console.error('Błąd weryfikacji 2FA:', error);
-        res.status(500).json({ error: 'Błąd serwera podczas weryfikacji 2FA' });
+        res.status(500).json({ 
+            success: false,
+            error: 'Błąd serwera podczas weryfikacji 2FA' 
+        });
     }
 });
 
 // =====================================
-// 🆕 POST /api/auth/2fa/webauthn/options - Opcje WebAuthn dla logowania
+// POST /api/auth/2fa/webauthn/options - Opcje WebAuthn dla logowania
 // =====================================
 router.post('/2fa/webauthn/options', async (req, res) => {
     try {
         const { challengeToken } = req.body;
 
         if (!challengeToken) {
-            return res.status(400).json({ error: 'Token jest wymagany' });
+            return res.status(400).json({ 
+                success: false,
+                error: 'Token jest wymagany' 
+            });
         }
 
+        // Zweryfikuj token
         let decoded;
         try {
             decoded = authService.verifyToken(challengeToken);
         } catch (tokenError) {
-            return res.status(401).json({ error: 'Token wygasł' });
+            return res.status(401).json({ 
+                success: false,
+                error: 'Token wygasł. Zaloguj się ponownie.' 
+            });
+        }
+
+        // Sprawdź purpose tokena
+        if (decoded.purpose && decoded.purpose !== '2fa-verify') {
+            return res.status(401).json({ 
+                success: false,
+                error: 'Nieprawidłowy token' 
+            });
         }
 
         const userId = decoded.userId || decoded.id;
 
         if (!twoFactorService) {
-            return res.status(500).json({ error: 'Serwis 2FA niedostępny' });
+            return res.status(500).json({ 
+                success: false,
+                error: 'Serwis 2FA niedostępny' 
+            });
         }
 
+        // Sprawdź czy użytkownik ma WebAuthn włączone
+        const user = await prisma.user.findUnique({
+            where: { id: userId },
+            select: { 
+                twoFactorEnabled: true,
+                twoFactorMethod: true 
+            }
+        });
+
+        if (!user) {
+            return res.status(404).json({ 
+                success: false,
+                error: 'Użytkownik nie znaleziony' 
+            });
+        }
+
+        if (!user.twoFactorMethod?.includes('WEBAUTHN')) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'WebAuthn nie jest skonfigurowane dla tego konta' 
+            });
+        }
+
+        // Generuj opcje autentykacji
         const options = await twoFactorService.generateWebAuthnAuthenticationOptions(userId);
 
         res.json({
             success: true,
-            options
+            data: options
         });
 
     } catch (error) {
         console.error('Błąd pobierania opcji WebAuthn:', error);
-        res.status(500).json({ error: error.message || 'Błąd serwera' });
+        res.status(500).json({ 
+            success: false,
+            error: error.message || 'Błąd serwera' 
+        });
     }
 });
 
@@ -824,7 +950,7 @@ router.post('/resend-verification', async (req, res) => {
 });
 
 // =====================================
-// 🆕 GET /api/auth/me - Pobierz aktualnego użytkownika (z danymi 2FA)
+// GET /api/auth/me - Pobierz aktualnego użytkownika (z danymi 2FA)
 // =====================================
 router.get('/me', verifyToken, async (req, res) => {
     try {
@@ -841,7 +967,7 @@ router.get('/me', verifyToken, async (req, res) => {
                 createdAt: true,
                 referralCode: true,
                 referralEarnings: true,
-                // 🆕 Pola 2FA
+                // Pola 2FA
                 twoFactorEnabled: true,
                 twoFactorMethod: true,
                 twoFactorRequired: true,
@@ -866,7 +992,7 @@ router.get('/me', verifyToken, async (req, res) => {
                 createdAt: user.createdAt,
                 referralCode: user.referralCode,
                 referralEarnings: parseFloat(user.referralEarnings) || 0,
-                // 🆕 Dane 2FA
+                // Dane 2FA
                 twoFactorEnabled: user.twoFactorEnabled,
                 twoFactorMethods: user.twoFactorMethod || [],
                 twoFactorRequired: user.twoFactorRequired,
