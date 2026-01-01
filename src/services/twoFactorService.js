@@ -8,7 +8,8 @@ const {
   generateAuthenticationOptions,
   verifyAuthenticationResponse 
 } = require('@simplewebauthn/server');
-const prisma = require('../config/database');
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
 
 // Konfiguracja
 const ENCRYPTION_KEY = process.env.TWO_FACTOR_ENCRYPTION_KEY;
