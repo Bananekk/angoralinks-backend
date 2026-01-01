@@ -532,8 +532,7 @@ router.get('/users', async (req, res) => {
                     _count: {
                         select: { 
                             links: true,
-                            payouts: true,
-                            webAuthnCredentials: true  // 🆕
+                            payouts: true
                         }
                     }
                 },
@@ -548,6 +547,7 @@ router.get('/users', async (req, res) => {
         const usersWithTwoFactorInfo = await Promise.all(
             users.map(async (user) => {
                 let backupCodesRemaining = 0;
+                let webAuthnCount = 0;
                 
                 if (user.twoFactorEnabled) {
                     try {
@@ -556,6 +556,14 @@ router.get('/users', async (req, res) => {
                                 userId: user.id,
                                 usedAt: null
                             }
+                        });
+                    } catch (e) {
+                        // Tabela może nie istnieć
+                    }
+                    
+                    try {
+                        webAuthnCount = await prisma.webAuthnCredential.count({
+                            where: { userId: user.id }
                         });
                     } catch (e) {
                         // Tabela może nie istnieć
@@ -583,7 +591,7 @@ router.get('/users', async (req, res) => {
                         required: user.twoFactorRequired,
                         enabledAt: user.twoFactorEnabledAt,
                         lastUsedAt: user.twoFactorLastUsedAt,
-                        webAuthnCount: user._count.webAuthnCredentials,
+                        webAuthnCount,
                         backupCodesRemaining
                     }
                 };
@@ -635,8 +643,7 @@ router.get('/users/:id', async (req, res) => {
                 _count: {
                     select: { 
                         links: true,
-                        payouts: true,
-                        webAuthnCredentials: true
+                        payouts: true
                     }
                 },
                 links: {
@@ -654,16 +661,6 @@ router.get('/users/:id', async (req, res) => {
                 payouts: {
                     take: 5,
                     orderBy: { createdAt: 'desc' }
-                },
-                // 🆕 Klucze WebAuthn
-                webAuthnCredentials: {
-                    select: {
-                        id: true,
-                        deviceName: true,
-                        credentialDeviceType: true,
-                        lastUsedAt: true,
-                        createdAt: true
-                    }
                 }
             }
         });
@@ -698,6 +695,23 @@ router.get('/users/:id', async (req, res) => {
             // Tabela może nie istnieć
         }
 
+        // 🆕 Pobierz WebAuthn credentials
+        let webAuthnCredentials = [];
+        try {
+            webAuthnCredentials = await prisma.webAuthnCredential.findMany({
+                where: { userId: id },
+                select: {
+                    id: true,
+                    deviceName: true,
+                    credentialDeviceType: true,
+                    lastUsedAt: true,
+                    createdAt: true
+                }
+            });
+        } catch (e) {
+            // Tabela może nie istnieć
+        }
+
         // 🆕 Pobierz admina który wymusił 2FA
         let requiredByAdmin = null;
         if (user.twoFactorRequiredBy) {
@@ -725,7 +739,7 @@ router.get('/users/:id', async (req, res) => {
                     requiredBy: requiredByAdmin,
                     enabledAt: user.twoFactorEnabledAt,
                     lastUsedAt: user.twoFactorLastUsedAt,
-                    webAuthnCredentials: user.webAuthnCredentials,
+                    webAuthnCredentials,
                     backupCodes: backupCodesInfo
                 }
             }
@@ -848,16 +862,29 @@ router.delete('/users/:id', async (req, res) => {
             return res.status(404).json({ success: false, message: 'Użytkownik nie znaleziony' });
         }
 
-        await prisma.$transaction([
+        // Usuń w transakcji - bezpieczne usuwanie
+        const deleteOperations = [
             prisma.visit.deleteMany({ where: { link: { userId: id } } }),
             prisma.link.deleteMany({ where: { userId: id } }),
-            prisma.payout.deleteMany({ where: { userId: id } }),
-            // 🆕 Usuń dane 2FA
-            prisma.webAuthnCredential.deleteMany({ where: { userId: id } }),
-            prisma.backupCode.deleteMany({ where: { userId: id } }),
-            prisma.twoFactorLog.deleteMany({ where: { userId: id } }),
-            prisma.user.delete({ where: { id } })
-        ]);
+            prisma.payout.deleteMany({ where: { userId: id } })
+        ];
+
+        // 🆕 Dodaj usuwanie danych 2FA jeśli tabele istnieją
+        try {
+            deleteOperations.push(prisma.webAuthnCredential.deleteMany({ where: { userId: id } }));
+        } catch (e) {}
+        
+        try {
+            deleteOperations.push(prisma.backupCode.deleteMany({ where: { userId: id } }));
+        } catch (e) {}
+        
+        try {
+            deleteOperations.push(prisma.twoFactorLog.deleteMany({ where: { userId: id } }));
+        } catch (e) {}
+
+        deleteOperations.push(prisma.user.delete({ where: { id } }));
+
+        await prisma.$transaction(deleteOperations);
 
         res.json({ success: true, message: 'Użytkownik i wszystkie jego dane zostały usunięte' });
     } catch (error) {
@@ -909,7 +936,7 @@ router.post('/users/:id/recommend-2fa', async (req, res) => {
             await prisma.twoFactorLog.create({
                 data: {
                     userId: id,
-                    action: 'ADMIN_REQUIRED',
+                    action: 'ADMIN_RECOMMENDED',
                     success: true,
                     ipAddress: req.ip,
                     userAgent: req.headers['user-agent']
@@ -967,6 +994,72 @@ router.post('/users/:id/require-2fa', async (req, res) => {
                 }
             });
         }
+
+        // Wyślij email informacyjny
+        try {
+            await emailUtils.sendTwoFactorRequired(user.email);
+        } catch (emailError) {
+            console.error('Błąd wysyłania emaila:', emailError);
+        }
+
+        // Zapisz log
+        try {
+            await prisma.twoFactorLog.create({
+                data: {
+                    userId: id,
+                    action: 'ADMIN_REQUIRED',
+                    success: true,
+                    ipAddress: req.ip
+                }
+            });
+        } catch (logError) {
+            console.error('Błąd zapisywania logu:', logError);
+        }
+
+        res.json({ 
+            success: true,
+            message: '2FA zostało wymuszone dla użytkownika' 
+        });
+
+    } catch (error) {
+        console.error('Błąd wymuszania 2FA:', error);
+        res.status(500).json({ success: false, message: 'Błąd serwera' });
+    }
+});
+
+// 🆕 Alias dla kompatybilności z frontendem - /users/:id/2fa/recommend
+router.post('/users/:id/2fa/recommend', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const adminId = req.userId;
+
+        const user = await prisma.user.findUnique({
+            where: { id },
+            select: {
+                email: true,
+                twoFactorEnabled: true,
+                twoFactorRequired: true,
+                isActive: true
+            }
+        });
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'Użytkownik nie znaleziony' });
+        }
+
+        if (user.twoFactorRequired) {
+            return res.status(400).json({ success: false, message: '2FA jest już wymagane dla tego użytkownika' });
+        }
+
+        // Ustaw wymóg 2FA
+        await prisma.user.update({
+            where: { id },
+            data: {
+                twoFactorRequired: true,
+                twoFactorRequiredAt: new Date(),
+                twoFactorRequiredBy: adminId
+            }
+        });
 
         // Wyślij email informacyjny
         try {
@@ -1069,9 +1162,7 @@ router.post('/users/:id/reset-2fa', async (req, res) => {
         if (twoFactorService) {
             await twoFactorService.adminResetTwoFactor(id, adminId);
         } else {
-            await prisma.$transaction([
-                prisma.webAuthnCredential.deleteMany({ where: { userId: id } }),
-                prisma.backupCode.deleteMany({ where: { userId: id } }),
+            const deleteOperations = [
                 prisma.user.update({
                     where: { id },
                     data: {
@@ -1081,17 +1172,29 @@ router.post('/users/:id/reset-2fa', async (req, res) => {
                         twoFactorEnabledAt: null
                     }
                 })
-            ]);
+            ];
+
+            try {
+                deleteOperations.unshift(prisma.webAuthnCredential.deleteMany({ where: { userId: id } }));
+            } catch (e) {}
+            
+            try {
+                deleteOperations.unshift(prisma.backupCode.deleteMany({ where: { userId: id } }));
+            } catch (e) {}
+
+            await prisma.$transaction(deleteOperations);
 
             // Zapisz log
-            await prisma.twoFactorLog.create({
-                data: {
-                    userId: id,
-                    action: 'ADMIN_RESET',
-                    success: true,
-                    ipAddress: req.ip
-                }
-            });
+            try {
+                await prisma.twoFactorLog.create({
+                    data: {
+                        userId: id,
+                        action: 'ADMIN_RESET',
+                        success: true,
+                        ipAddress: req.ip
+                    }
+                });
+            } catch (e) {}
         }
 
         // Wyślij email informacyjny
@@ -1130,16 +1233,7 @@ router.get('/users/:id/2fa-status', async (req, res) => {
                 twoFactorRequiredAt: true,
                 twoFactorRequiredBy: true,
                 twoFactorEnabledAt: true,
-                twoFactorLastUsedAt: true,
-                webAuthnCredentials: {
-                    select: {
-                        id: true,
-                        deviceName: true,
-                        credentialDeviceType: true,
-                        lastUsedAt: true,
-                        createdAt: true
-                    }
-                }
+                twoFactorLastUsedAt: true
             }
         });
 
@@ -1147,26 +1241,47 @@ router.get('/users/:id/2fa-status', async (req, res) => {
             return res.status(404).json({ success: false, message: 'Użytkownik nie znaleziony' });
         }
 
+        // Pobierz WebAuthn credentials
+        let webAuthnCredentials = [];
+        try {
+            webAuthnCredentials = await prisma.webAuthnCredential.findMany({
+                where: { userId: id },
+                select: {
+                    id: true,
+                    deviceName: true,
+                    credentialDeviceType: true,
+                    lastUsedAt: true,
+                    createdAt: true
+                }
+            });
+        } catch (e) {}
+
         // Pobierz backup codes
-        const [totalBackupCodes, unusedBackupCodes] = await Promise.all([
-            prisma.backupCode.count({ where: { userId: id } }),
-            prisma.backupCode.count({ where: { userId: id, usedAt: null } })
-        ]);
+        let totalBackupCodes = 0, unusedBackupCodes = 0;
+        try {
+            [totalBackupCodes, unusedBackupCodes] = await Promise.all([
+                prisma.backupCode.count({ where: { userId: id } }),
+                prisma.backupCode.count({ where: { userId: id, usedAt: null } })
+            ]);
+        } catch (e) {}
 
         // Pobierz ostatnie logi 2FA
-        const recentLogs = await prisma.twoFactorLog.findMany({
-            where: { userId: id },
-            orderBy: { createdAt: 'desc' },
-            take: 10,
-            select: {
-                action: true,
-                method: true,
-                success: true,
-                ipAddress: true,
-                failReason: true,
-                createdAt: true
-            }
-        });
+        let recentLogs = [];
+        try {
+            recentLogs = await prisma.twoFactorLog.findMany({
+                where: { userId: id },
+                orderBy: { createdAt: 'desc' },
+                take: 10,
+                select: {
+                    action: true,
+                    method: true,
+                    success: true,
+                    ipAddress: true,
+                    failReason: true,
+                    createdAt: true
+                }
+            });
+        } catch (e) {}
 
         // Pobierz admina który wymusił 2FA
         let requiredByAdmin = null;
@@ -1192,7 +1307,7 @@ router.get('/users/:id/2fa-status', async (req, res) => {
                     enabledAt: user.twoFactorEnabledAt,
                     lastUsedAt: user.twoFactorLastUsedAt
                 },
-                webAuthnCredentials: user.webAuthnCredentials,
+                webAuthnCredentials,
                 backupCodes: {
                     total: totalBackupCodes,
                     remaining: unusedBackupCodes,
@@ -1214,42 +1329,47 @@ router.get('/2fa-stats', async (req, res) => {
         const [
             totalUsers,
             usersWithTwoFactor,
-            usersWithRequired,
-            totalWebAuthnCredentials,
-            totalBackupCodesUsed
+            usersWithRequired
         ] = await Promise.all([
             prisma.user.count(),
             prisma.user.count({ where: { twoFactorEnabled: true } }),
-            prisma.user.count({ where: { twoFactorRequired: true } }),
-            prisma.webAuthnCredential.count(),
-            prisma.backupCode.count({ where: { usedAt: { not: null } } })
+            prisma.user.count({ where: { twoFactorRequired: true } })
         ]);
 
         // Metody 2FA
-        const usersWithTotp = await prisma.user.count({
-            where: {
-                twoFactorEnabled: true,
-                twoFactorMethod: { has: 'TOTP' }
-            }
-        });
+        let usersWithTotp = 0, usersWithWebAuthn = 0;
+        try {
+            usersWithTotp = await prisma.user.count({
+                where: {
+                    twoFactorEnabled: true,
+                    twoFactorMethod: { has: 'TOTP' }
+                }
+            });
+        } catch (e) {}
 
-        const usersWithWebAuthn = await prisma.user.count({
-            where: {
-                twoFactorEnabled: true,
-                twoFactorMethod: { has: 'WEBAUTHN' }
-            }
-        });
+        try {
+            usersWithWebAuthn = await prisma.user.count({
+                where: {
+                    twoFactorEnabled: true,
+                    twoFactorMethod: { has: 'WEBAUTHN' }
+                }
+            });
+        } catch (e) {}
+
+        // Dodatkowe statystyki
+        let totalWebAuthnCredentials = 0, totalBackupCodesUsed = 0;
+        try {
+            totalWebAuthnCredentials = await prisma.webAuthnCredential.count();
+        } catch (e) {}
+        
+        try {
+            totalBackupCodesUsed = await prisma.backupCode.count({ where: { usedAt: { not: null } } });
+        } catch (e) {}
 
         // Logi z ostatnich 30 dni
         const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
         
-        const recentLogs = await prisma.twoFactorLog.groupBy({
-            by: ['action', 'success'],
-            where: { createdAt: { gte: thirtyDaysAgo } },
-            _count: true
-        });
-
-        const logStats = {
+        let logStats = {
             verifications: { successful: 0, failed: 0 },
             enablements: 0,
             disablements: 0,
@@ -1257,20 +1377,28 @@ router.get('/2fa-stats', async (req, res) => {
             backupCodesUsed: 0
         };
 
-        recentLogs.forEach(log => {
-            if (log.action === 'VERIFIED') {
-                if (log.success) logStats.verifications.successful += log._count;
-                else logStats.verifications.failed += log._count;
-            } else if (log.action === 'ENABLED') {
-                logStats.enablements += log._count;
-            } else if (log.action === 'DISABLED') {
-                logStats.disablements += log._count;
-            } else if (log.action === 'ADMIN_RESET') {
-                logStats.adminResets += log._count;
-            } else if (log.action === 'BACKUP_USED') {
-                logStats.backupCodesUsed += log._count;
-            }
-        });
+        try {
+            const recentLogs = await prisma.twoFactorLog.groupBy({
+                by: ['action', 'success'],
+                where: { createdAt: { gte: thirtyDaysAgo } },
+                _count: true
+            });
+
+            recentLogs.forEach(log => {
+                if (log.action === 'VERIFIED') {
+                    if (log.success) logStats.verifications.successful += log._count;
+                    else logStats.verifications.failed += log._count;
+                } else if (log.action === 'ENABLED') {
+                    logStats.enablements += log._count;
+                } else if (log.action === 'DISABLED') {
+                    logStats.disablements += log._count;
+                } else if (log.action === 'ADMIN_RESET') {
+                    logStats.adminResets += log._count;
+                } else if (log.action === 'BACKUP_USED') {
+                    logStats.backupCodesUsed += log._count;
+                }
+            });
+        } catch (e) {}
 
         res.json({
             success: true,
@@ -1743,7 +1871,7 @@ router.get('/encryption-status', async (req, res) => {
     try {
         const isValid = validateEncryptionKey();
         const hasAdsterraToken = !!process.env.ADSTERRA_API_TOKEN;
-        const hasTwoFactorKey = !!process.env.TWO_FACTOR_ENCRYPTION_KEY;  // 🆕
+        const hasTwoFactorKey = !!process.env.TWO_FACTOR_ENCRYPTION_KEY;
         
         res.json({
             success: true,
@@ -1756,7 +1884,6 @@ router.get('/encryption-status', async (req, res) => {
                 configured: hasAdsterraToken,
                 status: hasAdsterraToken ? 'Token ustawiony' : 'Brak tokenu ADSTERRA_API_TOKEN'
             },
-            // 🆕 Status 2FA
             twoFactor: {
                 configured: hasTwoFactorKey,
                 status: hasTwoFactorKey ? 'Klucz szyfrowania 2FA ustawiony' : 'Brak TWO_FACTOR_ENCRYPTION_KEY'
@@ -2174,7 +2301,7 @@ router.get('/fraud-alerts/stats', async (req, res) => {
             data: stats
         });
 
-        } catch (error) {
+    } catch (error) {
         console.error('Get fraud stats error:', error);
         res.status(500).json({
             success: false,
