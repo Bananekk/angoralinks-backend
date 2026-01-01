@@ -1294,18 +1294,16 @@ router.post('/users/:id/2fa/reset', async (req, res) => {
     }
 });
 
-// 🆕 Alias dla kompatybilności z frontendem - /users/:id/2fa/recommend
+// Wyślij zalecenie 2FA (tylko email, bez wymuszania)
 router.post('/users/:id/2fa/recommend', async (req, res) => {
     try {
         const { id } = req.params;
-        const adminId = req.userId;
 
         const user = await prisma.user.findUnique({
             where: { id },
             select: {
                 email: true,
                 twoFactorEnabled: true,
-                twoFactorRequired: true,
                 isActive: true
             }
         });
@@ -1314,25 +1312,20 @@ router.post('/users/:id/2fa/recommend', async (req, res) => {
             return res.status(404).json({ success: false, message: 'Użytkownik nie znaleziony' });
         }
 
-        if (user.twoFactorRequired) {
-            return res.status(400).json({ success: false, message: '2FA jest już wymagane dla tego użytkownika' });
+        if (!user.isActive) {
+            return res.status(400).json({ success: false, message: 'Użytkownik jest nieaktywny' });
         }
 
-        // Ustaw wymóg 2FA
-        await prisma.user.update({
-            where: { id },
-            data: {
-                twoFactorRequired: true,
-                twoFactorRequiredAt: new Date(),
-                twoFactorRequiredBy: adminId
-            }
-        });
+        if (user.twoFactorEnabled) {
+            return res.status(400).json({ success: false, message: 'Użytkownik ma już włączone 2FA' });
+        }
 
-        // Wyślij email informacyjny
+        // Tylko wyślij email z zaleceniem (NIE wymuszaj!)
         try {
-            await emailUtils.sendTwoFactorRequired(user.email);
+            await emailUtils.sendTwoFactorRecommendation(user.email);
         } catch (emailError) {
             console.error('Błąd wysyłania emaila:', emailError);
+            return res.status(500).json({ success: false, message: 'Błąd wysyłania emaila' });
         }
 
         // Zapisz log
@@ -1340,7 +1333,7 @@ router.post('/users/:id/2fa/recommend', async (req, res) => {
             await prisma.twoFactorLog.create({
                 data: {
                     userId: id,
-                    action: 'ADMIN_REQUIRED',
+                    action: 'ADMIN_RECOMMENDED',
                     success: true,
                     ipAddress: req.ip
                 }
@@ -1351,11 +1344,11 @@ router.post('/users/:id/2fa/recommend', async (req, res) => {
 
         res.json({ 
             success: true,
-            message: '2FA zostało wymuszone dla użytkownika' 
+            message: 'Zalecenie 2FA zostało wysłane' 
         });
 
     } catch (error) {
-        console.error('Błąd wymuszania 2FA:', error);
+        console.error('Błąd wysyłania zalecenia 2FA:', error);
         res.status(500).json({ success: false, message: 'Błąd serwera' });
     }
 });
