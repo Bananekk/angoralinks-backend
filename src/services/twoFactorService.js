@@ -196,10 +196,13 @@ async function generateWebAuthnRegistrationOptions(userId, userEmail) {
     supportedAlgorithmIDs: [-7, -257]
   });
   
+  // Zapisz challenge
   challengeStore.set(`reg_${userId}`, {
     challenge: options.challenge,
     expiresAt: Date.now() + 5 * 60 * 1000
   });
+  
+  console.log('Registration challenge saved for:', `reg_${userId}`);
   
   return options;
 }
@@ -226,18 +229,8 @@ async function verifyWebAuthnRegistration(userId, response, deviceName = null) {
     
     const { credential, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
     
-    // DEBUG
-    console.log('=== CREDENTIAL DEBUG ===');
-    console.log('response.id:', response.id);
-    console.log('credential.id type:', typeof credential.id);
-    console.log('credential.id constructor:', credential.id?.constructor?.name);
-    console.log('========================');
-    
     // W v13+ używamy response.id który jest już prawidłowym base64url stringiem
-    // credential.id jest Uint8Array ale response.id jest oryginalnym ID z przeglądarki
     const credentialIdToStore = response.id;
-    
-    // Dla publicKey musimy przekonwertować Uint8Array
     const publicKeyBase64 = Buffer.from(credential.publicKey).toString('base64url');
     
     await prisma.webAuthnCredential.create({
@@ -293,32 +286,44 @@ async function generateWebAuthnAuthenticationOptions(userId) {
     throw new Error('Brak zarejestrowanych kluczy');
   }
   
-  // 🔧 DEBUG - sprawdź co jest w bazie
-  console.log('Credentials from DB:', credentials.map(c => ({
-    id: c.credentialId,
-    transports: c.transports
-  })));
+  console.log('Generating auth options for userId:', userId);
+  console.log('Credentials from DB:', credentials.map(c => c.credentialId));
   
   const options = await generateAuthenticationOptions({
     rpID: RP_ID,
     allowCredentials: credentials.map(cred => ({
-      id: cred.credentialId,  // To już jest base64url string z bazy
+      id: cred.credentialId,
       type: 'public-key',
       transports: cred.transports?.length > 0 ? cred.transports : ['internal', 'hybrid']
     })),
     userVerification: 'preferred'
   });
   
-  // 🔧 DEBUG
-  console.log('Generated options allowCredentials:', options.allowCredentials);
+  // 🔧 NAPRAWIONE - zapisz challenge do store!
+  challengeStore.set(`auth_${userId}`, {
+    challenge: options.challenge,
+    expiresAt: Date.now() + 5 * 60 * 1000
+  });
+  
+  console.log('Auth challenge saved for:', `auth_${userId}`);
+  console.log('ChallengeStore size:', challengeStore.size);
   
   return options;
 }
 
 async function verifyWebAuthnAuthentication(userId, response) {
+  console.log('=== VERIFY AUTH START ===');
+  console.log('userId:', userId);
+  console.log('Looking for key:', `auth_${userId}`);
+  console.log('ChallengeStore size:', challengeStore.size);
+  console.log('ChallengeStore keys:', Array.from(challengeStore.keys()));
+  
   const stored = challengeStore.get(`auth_${userId}`);
   
+  console.log('Stored challenge found:', !!stored);
+  
   if (!stored || stored.expiresAt < Date.now()) {
+    console.log('Challenge expired or not found!');
     throw new Error('Challenge wygasł lub nie istnieje');
   }
   
@@ -365,8 +370,11 @@ async function verifyWebAuthnAuthentication(userId, response) {
       data: { twoFactorLastUsedAt: new Date() }
     });
     
+    console.log('=== VERIFY AUTH SUCCESS ===');
+    
     return { verified: true };
   } catch (error) {
+    console.error('WebAuthn verification error:', error);
     await logTwoFactorAction(userId, 'FAILED', 'WEBAUTHN', false, null, null, error.message);
     throw error;
   }
