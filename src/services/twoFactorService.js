@@ -226,11 +226,25 @@ async function verifyWebAuthnRegistration(userId, response, deviceName = null) {
     
     const { credential, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
     
+    // DEBUG
+    console.log('=== CREDENTIAL DEBUG ===');
+    console.log('response.id:', response.id);
+    console.log('credential.id type:', typeof credential.id);
+    console.log('credential.id constructor:', credential.id?.constructor?.name);
+    console.log('========================');
+    
+    // W v13+ używamy response.id który jest już prawidłowym base64url stringiem
+    // credential.id jest Uint8Array ale response.id jest oryginalnym ID z przeglądarki
+    const credentialIdToStore = response.id;
+    
+    // Dla publicKey musimy przekonwertować Uint8Array
+    const publicKeyBase64 = Buffer.from(credential.publicKey).toString('base64url');
+    
     await prisma.webAuthnCredential.create({
       data: {
         userId,
-        credentialId: Buffer.from(credential.id).toString('base64url'),
-        credentialPublicKey: Buffer.from(credential.publicKey).toString('base64url'),
+        credentialId: credentialIdToStore,
+        credentialPublicKey: publicKeyBase64,
         counter: BigInt(credential.counter),
         credentialDeviceType,
         credentialBackedUp,
