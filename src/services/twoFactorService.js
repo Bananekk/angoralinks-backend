@@ -29,14 +29,11 @@ const ORIGIN = process.env.WEBAUTHN_ORIGIN || 'https://angoralinks.pl';
 authenticator.options = {
   digits: 6,
   step: 30,
-  window: 1 // Akceptuj kod z 1 okresem przed/po
+  window: 1
 };
 
 // ========== POMOCNICZE FUNKCJE SZYFROWANIA ==========
 
-/**
- * Szyfruje tekst używając AES-256-GCM
- */
 function encrypt(text) {
   const iv = crypto.randomBytes(16);
   const key = crypto.scryptSync(ENCRYPTION_KEY, 'salt', 32);
@@ -50,9 +47,6 @@ function encrypt(text) {
   return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted}`;
 }
 
-/**
- * Deszyfruje tekst
- */
 function decrypt(encryptedText) {
   const [ivHex, authTagHex, encrypted] = encryptedText.split(':');
   
@@ -69,18 +63,12 @@ function decrypt(encryptedText) {
   return decrypted;
 }
 
-/**
- * Hashuje kod zapasowy
- */
 function hashBackupCode(code) {
   return crypto.createHash('sha256').update(code).digest('hex');
 }
 
-/**
- * Generuje losowy kod zapasowy (8 znaków alfanumerycznych)
- */
 function generateBackupCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Bez podobnych znaków (0, O, 1, I)
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code = '';
   for (let i = 0; i < 8; i++) {
     code += chars.charAt(crypto.randomInt(chars.length));
@@ -90,16 +78,10 @@ function generateBackupCode() {
 
 // ========== TOTP (Google Authenticator) ==========
 
-/**
- * Generuje nowy sekret TOTP i kod QR
- */
 async function generateTotpSecret(userId, userEmail) {
   const secret = authenticator.generateSecret();
-  
-  // Generuj URI dla aplikacji authenticator
   const otpauth = authenticator.keyuri(userEmail, ISSUER, secret);
   
-  // Generuj QR code jako data URL
   const qrCodeDataUrl = await QRCode.toDataURL(otpauth, {
     width: 256,
     margin: 2,
@@ -120,9 +102,6 @@ async function generateTotpSecret(userId, userEmail) {
   };
 }
 
-/**
- * Weryfikuje kod TOTP
- */
 function verifyTotpCode(secret, code) {
   try {
     return authenticator.verify({ token: code, secret });
@@ -132,21 +111,15 @@ function verifyTotpCode(secret, code) {
   }
 }
 
-/**
- * Włącza TOTP dla użytkownika
- */
 async function enableTotp(userId, secret, verificationCode) {
-  // Najpierw zweryfikuj kod
   const isValid = verifyTotpCode(secret, verificationCode);
   
   if (!isValid) {
     throw new Error('Nieprawidłowy kod weryfikacyjny');
   }
   
-  // Zaszyfruj sekret przed zapisem
   const encryptedSecret = encrypt(secret);
   
-  // Pobierz aktualne metody
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: { twoFactorMethod: true }
@@ -157,7 +130,6 @@ async function enableTotp(userId, secret, verificationCode) {
     methods.push('TOTP');
   }
   
-  // Zaktualizuj użytkownika
   await prisma.user.update({
     where: { id: userId },
     data: {
@@ -168,15 +140,11 @@ async function enableTotp(userId, secret, verificationCode) {
     }
   });
   
-  // Zapisz log
   await logTwoFactorAction(userId, 'ENABLED', 'TOTP', true);
   
   return true;
 }
 
-/**
- * Wyłącza TOTP dla użytkownika
- */
 async function disableTotp(userId) {
   const user = await prisma.user.findUnique({
     where: { id: userId },
@@ -201,14 +169,9 @@ async function disableTotp(userId) {
 
 // ========== WEBAUTHN (Passkeys/Security Keys) ==========
 
-// Przechowywanie tymczasowe challenge'ów (w produkcji użyj Redis)
 const challengeStore = new Map();
 
-/**
- * Generuje opcje rejestracji WebAuthn
- */
 async function generateWebAuthnRegistrationOptions(userId, userEmail) {
-  // Pobierz istniejące credentials użytkownika
   const existingCredentials = await prisma.webAuthnCredential.findMany({
     where: { userId },
     select: { credentialId: true }
@@ -229,25 +192,19 @@ async function generateWebAuthnRegistrationOptions(userId, userEmail) {
     authenticatorSelection: {
       residentKey: 'preferred',
       userVerification: 'preferred',
-      authenticatorAttachment: 'cross-platform' // Pozwól na klucze sprzętowe i biometrię
     },
-    supportedAlgorithmIDs: [-7, -257] // ES256, RS256
+    supportedAlgorithmIDs: [-7, -257]
   });
   
-  // Zapisz challenge tymczasowo
   challengeStore.set(`reg_${userId}`, {
     challenge: options.challenge,
-    expiresAt: Date.now() + 5 * 60 * 1000 // 5 minut
+    expiresAt: Date.now() + 5 * 60 * 1000
   });
   
   return options;
 }
 
-/**
- * Weryfikuje i zapisuje nowy credential WebAuthn
- */
 async function verifyWebAuthnRegistration(userId, response, deviceName = null) {
-  // Pobierz zapisany challenge
   const stored = challengeStore.get(`reg_${userId}`);
   
   if (!stored || stored.expiresAt < Date.now()) {
@@ -267,15 +224,14 @@ async function verifyWebAuthnRegistration(userId, response, deviceName = null) {
       throw new Error('Weryfikacja nie powiodła się');
     }
     
-    const { credentialPublicKey, credentialID, counter, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
+    const { credential, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
     
-    // Zapisz credential
     await prisma.webAuthnCredential.create({
       data: {
         userId,
-        credentialId: Buffer.from(credentialID).toString('base64url'),
-        credentialPublicKey: Buffer.from(credentialPublicKey).toString('base64url'),
-        counter: BigInt(counter),
+        credentialId: Buffer.from(credential.id).toString('base64url'),
+        credentialPublicKey: Buffer.from(credential.publicKey).toString('base64url'),
+        counter: BigInt(credential.counter),
         credentialDeviceType,
         credentialBackedUp,
         transports: response.response.transports || [],
@@ -283,7 +239,6 @@ async function verifyWebAuthnRegistration(userId, response, deviceName = null) {
       }
     });
     
-    // Zaktualizuj metody 2FA użytkownika
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: { twoFactorMethod: true }
@@ -303,7 +258,6 @@ async function verifyWebAuthnRegistration(userId, response, deviceName = null) {
       }
     });
     
-    // Wyczyść challenge
     challengeStore.delete(`reg_${userId}`);
     
     await logTwoFactorAction(userId, 'WEBAUTHN_REGISTERED', 'WEBAUTHN', true);
@@ -315,11 +269,7 @@ async function verifyWebAuthnRegistration(userId, response, deviceName = null) {
   }
 }
 
-/**
- * Generuje opcje autentykacji WebAuthn
- */
 async function generateWebAuthnAuthenticationOptions(userId) {
-  // Pobierz credentials użytkownika
   const credentials = await prisma.webAuthnCredential.findMany({
     where: { userId },
     select: { credentialId: true, transports: true }
@@ -339,7 +289,6 @@ async function generateWebAuthnAuthenticationOptions(userId) {
     userVerification: 'preferred'
   });
   
-  // Zapisz challenge
   challengeStore.set(`auth_${userId}`, {
     challenge: options.challenge,
     expiresAt: Date.now() + 5 * 60 * 1000
@@ -348,9 +297,6 @@ async function generateWebAuthnAuthenticationOptions(userId) {
   return options;
 }
 
-/**
- * Weryfikuje odpowiedź autentykacji WebAuthn
- */
 async function verifyWebAuthnAuthentication(userId, response) {
   const stored = challengeStore.get(`auth_${userId}`);
   
@@ -358,7 +304,6 @@ async function verifyWebAuthnAuthentication(userId, response) {
     throw new Error('Challenge wygasł lub nie istnieje');
   }
   
-  // Znajdź credential
   const credential = await prisma.webAuthnCredential.findUnique({
     where: { credentialId: response.id }
   });
@@ -385,7 +330,6 @@ async function verifyWebAuthnAuthentication(userId, response) {
       throw new Error('Weryfikacja nie powiodła się');
     }
     
-    // Zaktualizuj counter i ostatnie użycie
     await prisma.webAuthnCredential.update({
       where: { id: credential.id },
       data: {
@@ -394,12 +338,10 @@ async function verifyWebAuthnAuthentication(userId, response) {
       }
     });
     
-    // Wyczyść challenge
     challengeStore.delete(`auth_${userId}`);
     
     await logTwoFactorAction(userId, 'VERIFIED', 'WEBAUTHN', true);
     
-    // Zaktualizuj ostatnie użycie 2FA
     await prisma.user.update({
       where: { id: userId },
       data: { twoFactorLastUsedAt: new Date() }
@@ -412,9 +354,6 @@ async function verifyWebAuthnAuthentication(userId, response) {
   }
 }
 
-/**
- * Usuwa credential WebAuthn
- */
 async function removeWebAuthnCredential(userId, credentialId) {
   const credential = await prisma.webAuthnCredential.findFirst({
     where: { id: credentialId, userId }
@@ -428,13 +367,11 @@ async function removeWebAuthnCredential(userId, credentialId) {
     where: { id: credentialId }
   });
   
-  // Sprawdź czy są jeszcze jakieś credentials
   const remainingCredentials = await prisma.webAuthnCredential.count({
     where: { userId }
   });
   
   if (remainingCredentials === 0) {
-    // Usuń WEBAUTHN z metod
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: { twoFactorMethod: true }
@@ -458,16 +395,11 @@ async function removeWebAuthnCredential(userId, credentialId) {
 
 // ========== BACKUP CODES ==========
 
-/**
- * Generuje nowe kody zapasowe
- */
 async function generateBackupCodes(userId) {
-  // Usuń stare kody
   await prisma.backupCode.deleteMany({
     where: { userId }
   });
   
-  // Wygeneruj 10 nowych kodów
   const codes = [];
   const codeRecords = [];
   
@@ -480,20 +412,15 @@ async function generateBackupCodes(userId) {
     });
   }
   
-  // Zapisz zhashowane kody
   await prisma.backupCode.createMany({
     data: codeRecords
   });
   
   await logTwoFactorAction(userId, 'BACKUP_REGENERATED', null, true);
   
-  // Zwróć kody w czystej formie (tylko raz!)
   return codes;
 }
 
-/**
- * Weryfikuje kod zapasowy
- */
 async function verifyBackupCode(userId, code) {
   const codeHash = hashBackupCode(code.toUpperCase().replace(/\s/g, ''));
   
@@ -510,7 +437,6 @@ async function verifyBackupCode(userId, code) {
     return false;
   }
   
-  // Oznacz kod jako użyty
   await prisma.backupCode.update({
     where: { id: backupCode.id },
     data: { usedAt: new Date() }
@@ -518,7 +444,6 @@ async function verifyBackupCode(userId, code) {
   
   await logTwoFactorAction(userId, 'BACKUP_USED', 'BACKUP_CODE', true);
   
-  // Zaktualizuj ostatnie użycie 2FA
   await prisma.user.update({
     where: { id: userId },
     data: { twoFactorLastUsedAt: new Date() }
@@ -527,9 +452,6 @@ async function verifyBackupCode(userId, code) {
   return true;
 }
 
-/**
- * Pobiera liczbę pozostałych kodów zapasowych
- */
 async function getRemainingBackupCodesCount(userId) {
   return await prisma.backupCode.count({
     where: {
@@ -541,9 +463,6 @@ async function getRemainingBackupCodesCount(userId) {
 
 // ========== ZARZĄDZANIE 2FA ==========
 
-/**
- * Pobiera status 2FA użytkownika
- */
 async function getTwoFactorStatus(userId) {
   const user = await prisma.user.findUnique({
     where: { id: userId },
@@ -581,9 +500,6 @@ async function getTwoFactorStatus(userId) {
   };
 }
 
-/**
- * Całkowicie wyłącza 2FA dla użytkownika
- */
 async function disableTwoFactor(userId, verificationCode = null, method = null) {
   const user = await prisma.user.findUnique({
     where: { id: userId },
@@ -598,7 +514,6 @@ async function disableTwoFactor(userId, verificationCode = null, method = null) 
     throw new Error('2FA jest wymagane przez administratora i nie może być wyłączone');
   }
   
-  // Jeśli podano kod weryfikacyjny, zweryfikuj
   if (verificationCode && user.twoFactorMethod.includes('TOTP') && user.twoFactorSecret) {
     const secret = decrypt(user.twoFactorSecret);
     const isValid = verifyTotpCode(secret, verificationCode);
@@ -607,7 +522,6 @@ async function disableTwoFactor(userId, verificationCode = null, method = null) 
     }
   }
   
-  // Usuń wszystkie dane 2FA
   await prisma.$transaction([
     prisma.webAuthnCredential.deleteMany({ where: { userId } }),
     prisma.backupCode.deleteMany({ where: { userId } }),
@@ -627,9 +541,6 @@ async function disableTwoFactor(userId, verificationCode = null, method = null) 
   return true;
 }
 
-/**
- * Weryfikuje kod 2FA (TOTP)
- */
 async function verifyTwoFactorCode(userId, code, ipAddress = null, userAgent = null) {
   const user = await prisma.user.findUnique({
     where: { id: userId },
@@ -658,9 +569,6 @@ async function verifyTwoFactorCode(userId, code, ipAddress = null, userAgent = n
 
 // ========== FUNKCJE ADMINA ==========
 
-/**
- * Wymusza 2FA dla użytkownika
- */
 async function requireTwoFactor(userId, adminId) {
   await prisma.user.update({
     where: { id: userId },
@@ -676,9 +584,6 @@ async function requireTwoFactor(userId, adminId) {
   return true;
 }
 
-/**
- * Usuwa wymóg 2FA
- */
 async function removeRequireTwoFactor(userId) {
   await prisma.user.update({
     where: { id: userId },
@@ -692,9 +597,6 @@ async function removeRequireTwoFactor(userId) {
   return true;
 }
 
-/**
- * Resetuje 2FA użytkownika (przez admina)
- */
 async function adminResetTwoFactor(userId, adminId) {
   await prisma.$transaction([
     prisma.webAuthnCredential.deleteMany({ where: { userId } }),
@@ -706,7 +608,6 @@ async function adminResetTwoFactor(userId, adminId) {
         twoFactorSecret: null,
         twoFactorMethod: [],
         twoFactorEnabledAt: null
-        // Zachowaj twoFactorRequired jeśli było ustawione
       }
     })
   ]);
@@ -718,9 +619,6 @@ async function adminResetTwoFactor(userId, adminId) {
 
 // ========== POMOCNICZE ==========
 
-/**
- * Zapisuje log akcji 2FA
- */
 async function logTwoFactorAction(userId, action, method, success, ipAddress = null, userAgent = null, failReason = null) {
   await prisma.twoFactorLog.create({
     data: {
@@ -735,9 +633,6 @@ async function logTwoFactorAction(userId, action, method, success, ipAddress = n
   });
 }
 
-/**
- * Wykrywa nazwę urządzenia na podstawie odpowiedzi WebAuthn
- */
 function detectDeviceName(response) {
   const transports = response.response?.transports || [];
   
