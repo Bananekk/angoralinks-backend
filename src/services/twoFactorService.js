@@ -233,6 +233,9 @@ async function verifyWebAuthnRegistration(userId, response, deviceName = null) {
     const credentialIdToStore = response.id;
     const publicKeyBase64 = Buffer.from(credential.publicKey).toString('base64url');
     
+    console.log('Saving credential with public key length:', credential.publicKey.length);
+    console.log('Public key Base64URL:', publicKeyBase64.substring(0, 50) + '...');
+    
     await prisma.webAuthnCredential.create({
       data: {
         userId,
@@ -299,7 +302,7 @@ async function generateWebAuthnAuthenticationOptions(userId) {
     userVerification: 'preferred'
   });
   
-  // 🔧 NAPRAWIONE - zapisz challenge do store!
+  // Zapisz challenge do store
   challengeStore.set(`auth_${userId}`, {
     challenge: options.challenge,
     expiresAt: Date.now() + 5 * 60 * 1000
@@ -336,6 +339,17 @@ async function verifyWebAuthnAuthentication(userId, response) {
   }
   
   try {
+    // ⭐ KLUCZOWA POPRAWKA - konwersja Base64URL -> Uint8Array/Buffer
+    const publicKeyBytes = Buffer.from(credential.credentialPublicKey, 'base64url');
+    
+    console.log('Public key from DB:', credential.credentialPublicKey?.substring(0, 50) + '...');
+    console.log('Public key bytes length:', publicKeyBytes.length);
+    
+    // Sprawdź czy klucz nie jest pusty
+    if (publicKeyBytes.length === 0) {
+      throw new Error('Klucz publiczny jest pusty - wymagana ponowna rejestracja');
+    }
+    
     const verification = await verifyAuthenticationResponse({
       response,
       expectedChallenge: stored.challenge,
@@ -343,7 +357,7 @@ async function verifyWebAuthnAuthentication(userId, response) {
       expectedRPID: RP_ID,
       credential: {
         id: credential.credentialId,
-        publicKey: credential.credentialPublicKey,
+        publicKey: publicKeyBytes,  // ⭐ Teraz to Buffer/Uint8Array!
         counter: Number(credential.counter)
       },
       requireUserVerification: true
