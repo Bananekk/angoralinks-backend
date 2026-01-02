@@ -1,4 +1,11 @@
 // services/twoFactorService.js
+
+// Polyfill dla WebCrypto na starszych wersjach Node.js
+const { webcrypto } = require('crypto');
+if (!globalThis.crypto) {
+    globalThis.crypto = webcrypto;
+}
+
 const { authenticator } = require('otplib');
 const QRCode = require('qrcode');
 const crypto = require('crypto');
