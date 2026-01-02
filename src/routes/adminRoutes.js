@@ -1194,7 +1194,7 @@ router.post('/users/:id/2fa/remove-force', async (req, res) => {
             await prisma.twoFactorLog.create({
                 data: {
                     userId: id,
-                    action: 'ADMIN_REMOVED_FORCE',
+                    action: 'ADMIN_RESET',
                     success: true,
                     ipAddress: req.ip
                 }
