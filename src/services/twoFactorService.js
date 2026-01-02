@@ -279,20 +279,24 @@ async function generateWebAuthnAuthenticationOptions(userId) {
     throw new Error('Brak zarejestrowanych kluczy');
   }
   
+  // 🔧 DEBUG - sprawdź co jest w bazie
+  console.log('Credentials from DB:', credentials.map(c => ({
+    id: c.credentialId,
+    transports: c.transports
+  })));
+  
   const options = await generateAuthenticationOptions({
     rpID: RP_ID,
     allowCredentials: credentials.map(cred => ({
-      id: cred.credentialId,
+      id: cred.credentialId,  // To już jest base64url string z bazy
       type: 'public-key',
-      transports: cred.transports
+      transports: cred.transports?.length > 0 ? cred.transports : ['internal', 'hybrid']
     })),
     userVerification: 'preferred'
   });
   
-  challengeStore.set(`auth_${userId}`, {
-    challenge: options.challenge,
-    expiresAt: Date.now() + 5 * 60 * 1000
-  });
+  // 🔧 DEBUG
+  console.log('Generated options allowCredentials:', options.allowCredentials);
   
   return options;
 }
