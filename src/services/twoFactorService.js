@@ -185,7 +185,7 @@ async function generateWebAuthnRegistrationOptions(userId, userEmail) {
     userDisplayName: userEmail.split('@')[0],
     attestationType: 'none',
     excludeCredentials: existingCredentials.map(cred => ({
-      id: Buffer.from(cred.credentialId, 'base64url'),
+      id: cred.credentialId,
       type: 'public-key',
       transports: ['usb', 'ble', 'nfc', 'internal']
     })),
@@ -282,7 +282,7 @@ async function generateWebAuthnAuthenticationOptions(userId) {
   const options = await generateAuthenticationOptions({
     rpID: RP_ID,
     allowCredentials: credentials.map(cred => ({
-      id: Buffer.from(cred.credentialId, 'base64url'),
+      id: cred.credentialId,
       type: 'public-key',
       transports: cred.transports
     })),
@@ -318,9 +318,9 @@ async function verifyWebAuthnAuthentication(userId, response) {
       expectedChallenge: stored.challenge,
       expectedOrigin: ORIGIN,
       expectedRPID: RP_ID,
-      authenticator: {
-        credentialPublicKey: Buffer.from(credential.credentialPublicKey, 'base64url'),
-        credentialID: Buffer.from(credential.credentialId, 'base64url'),
+      credential: {
+        id: credential.credentialId,
+        publicKey: credential.credentialPublicKey,
         counter: Number(credential.counter)
       },
       requireUserVerification: true
