@@ -217,7 +217,7 @@ async function generateWebAuthnRegistrationOptions(userId, userEmail) {
   const options = await generateRegistrationOptions({
     rpName: RP_NAME,
     rpID: RP_ID,
-    userID: userId,
+    userID: new TextEncoder().encode(userId),
     userName: userEmail,
     userDisplayName: userEmail.split('@')[0],
     attestationType: 'none',
