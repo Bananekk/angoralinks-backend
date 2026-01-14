@@ -25,6 +25,16 @@ const getClientIp = (req) => {
            'unknown';
 };
 
+// 🔥 Helper do hashowania IP (spójny z redirectRoutes.js)
+const hashIP = (ip) => {
+    if (!ip || ip === 'unknown') return null;
+    return crypto
+        .createHash('sha256')
+        .update(ip + (process.env.IP_HASH_SALT || 'angoralinks-2024'))
+        .digest('hex')
+        .substring(0, 32);
+};
+
 class AuthController {
     // POST /api/auth/register
     async register(req, res) {
@@ -62,6 +72,10 @@ class AuthController {
             // Pobierz IP rejestracji
             const registrationIp = getClientIp(req);
             console.log('📝 Registration IP:', registrationIp);
+
+            // 🔥 NOWE: Stwórz HASH IP do porównań (self-click detection)
+            const ipHash = hashIP(registrationIp);
+            console.log('📝 Registration IP Hash:', ipHash);
 
             // ========================================
             // WALIDACJA KODU POLECAJĄCEGO
@@ -136,20 +150,7 @@ class AuthController {
             }
 
             // ========================================
-            // HASH IP
-            // ========================================
-            let ipHash = null;
-            if (registrationIp && registrationIp !== 'unknown') {
-                try {
-                    ipHash = ReferralService.hashIP(registrationIp);
-                    console.log('✅ IP hashed successfully');
-                } catch (hashError) {
-                    console.error('❌ Error hashing IP:', hashError.message);
-                }
-            }
-
-            // ========================================
-            // SPRAWDZENIE FRAUDU
+            // SPRAWDZENIE FRAUDU (używa własnego hasha z ReferralService)
             // ========================================
             let fraudData = { isFraud: false, reason: null };
             if (referrerId && ipHash) {
@@ -170,6 +171,8 @@ class AuthController {
 
             // ========================================
             // PRZYGOTOWANIE DANYCH UŻYTKOWNIKA
+            // 🔥 registrationIp = HASH (do self-click detection w redirectRoutes)
+            // 🔥 referralIpHash = HASH (do fraud detection)
             // ========================================
             const userData = {
                 email: email.toLowerCase().trim(),
@@ -180,8 +183,8 @@ class AuthController {
                 referralCode: userReferralCode,
                 referredById: referrerId,
                 referralBonusExpires: bonusExpires,
-                registrationIp: ipHash,
-                referralIpHash: ipHash,
+                registrationIp: ipHash,              // 🔥 HASH do self-click detection
+                referralIpHash: ipHash,              // 🔥 HASH do fraud detection
                 referralFraudFlag: fraudData.isFraud,
                 referralFraudReason: fraudData.reason || null,
                 referralFraudCheckedAt: referrerId ? new Date() : null
@@ -192,7 +195,7 @@ class AuthController {
             console.log('   - email:', userData.email);
             console.log('   - referralCode:', userData.referralCode);
             console.log('   - referredById:', userData.referredById);
-            console.log('   - referralBonusExpires:', userData.referralBonusExpires);
+            console.log('   - registrationIp (HASH):', userData.registrationIp);
             console.log('   - referralFraudFlag:', userData.referralFraudFlag);
             console.log('========================================');
 
@@ -367,7 +370,8 @@ class AuthController {
     }
 
     // ========================================
-    // 🆕 POST /api/auth/login - Z OBSŁUGĄ 2FA
+    // POST /api/auth/login - Z OBSŁUGĄ 2FA
+    // 🔥 ZAKTUALIZOWANE: Zapisuje HASH IP do lastLoginIp
     // ========================================
     async login(req, res) {
         try {
@@ -388,7 +392,6 @@ class AuthController {
                     isAdmin: true,
                     balance: true,
                     referralCode: true,
-                    // 🆕 Pola 2FA
                     twoFactorEnabled: true,
                     twoFactorMethod: true,
                     twoFactorRequired: true
@@ -399,14 +402,12 @@ class AuthController {
                 return res.status(401).json({ error: 'Nieprawidłowy email lub hasło' });
             }
 
-            // Sprawdź czy konto aktywne
             if (!user.isActive) {
                 return res.status(403).json({ 
                     error: 'Konto zostało zablokowane. Skontaktuj się z supportem.' 
                 });
             }
 
-            // Sprawdź czy zweryfikowany
             if (!user.isVerified) {
                 return res.status(403).json({
                     error: 'Konto nie zostało zweryfikowane. Sprawdź email.',
@@ -420,26 +421,21 @@ class AuthController {
                 return res.status(401).json({ error: 'Nieprawidłowy email lub hasło' });
             }
 
-            // Pobierz IP
+            // 🔥 Pobierz IP i zrób HASH (spójnie z redirectRoutes.js)
             const loginIp = getClientIp(req);
-            let ipHash = null;
+            const ipHash = hashIP(loginIp);
             
-            try {
-                ipHash = ReferralService.hashIP(loginIp);
-            } catch (e) {
-                console.error('Error hashing login IP:', e.message);
-            }
+            console.log('🔐 Login IP:', loginIp);
+            console.log('🔐 Login IP Hash:', ipHash);
 
             // ========================================
-            // 🆕 SPRAWDZENIE 2FA
+            // SPRAWDZENIE 2FA
             // ========================================
 
-            // Przypadek 1: 2FA wymagane przez admina, ale nie skonfigurowane
             if (user.twoFactorRequired && !user.twoFactorEnabled) {
                 console.log('🔐 2FA required but not enabled for:', user.email);
                 
-                // Generuj tymczasowy token do konfiguracji 2FA
-                const setupToken = authService.generateToken(user.id, '15m'); // Token ważny 15 minut
+                const setupToken = authService.generateToken(user.id, '15m');
                 
                 return res.json({
                     success: true,
@@ -451,12 +447,10 @@ class AuthController {
                 });
             }
 
-            // Przypadek 2: 2FA włączone - wymagaj weryfikacji
             if (user.twoFactorEnabled && user.twoFactorMethod && user.twoFactorMethod.length > 0) {
                 console.log('🔐 2FA enabled for:', user.email, 'Methods:', user.twoFactorMethod);
                 
-                // Generuj tymczasowy token do weryfikacji 2FA
-                const challengeToken = authService.generateToken(user.id, '5m'); // Token ważny 5 minut
+                const challengeToken = authService.generateToken(user.id, '5m');
                 
                 return res.json({
                     success: true,
@@ -470,16 +464,15 @@ class AuthController {
 
             // ========================================
             // LOGOWANIE BEZ 2FA
+            // 🔥 lastLoginIp = HASH (do self-click detection)
             // ========================================
             console.log('✅ Login without 2FA for:', user.email);
 
-            // Aktualizuj ostatnie logowanie
             await prisma.user.update({
                 where: { id: user.id },
                 data: { 
                     lastLoginAt: new Date(),
-                    lastLoginIp: ipHash,
-                    referralIpHash: ipHash
+                    lastLoginIp: ipHash    // 🔥 HASH do self-click detection
                 }
             });
 
@@ -489,7 +482,7 @@ class AuthController {
                 httpOnly: true,
                 secure: process.env.NODE_ENV === 'production',
                 sameSite: 'strict',
-                maxAge: 7 * 24 * 60 * 60 * 1000 // 7 dni
+                maxAge: 7 * 24 * 60 * 60 * 1000
             });
 
             res.json({
@@ -514,7 +507,8 @@ class AuthController {
     }
 
     // ========================================
-    // 🆕 POST /api/auth/2fa/verify - Weryfikacja 2FA przy logowaniu
+    // POST /api/auth/2fa/verify
+    // 🔥 ZAKTUALIZOWANE: Zapisuje HASH IP
     // ========================================
     async verifyTwoFactor(req, res) {
         try {
@@ -524,7 +518,6 @@ class AuthController {
                 return res.status(400).json({ error: 'Token weryfikacyjny jest wymagany' });
             }
 
-            // Zweryfikuj challengeToken
             let decoded;
             try {
                 decoded = authService.verifyToken(challengeToken);
@@ -561,12 +554,7 @@ class AuthController {
             const userAgent = req.headers['user-agent'];
             let verified = false;
 
-            // ========================================
-            // Weryfikacja w zależności od metody
-            // ========================================
-            
             if (method === 'TOTP' || (!method && code)) {
-                // Weryfikacja kodem TOTP
                 if (!code) {
                     return res.status(400).json({ error: 'Kod weryfikacyjny jest wymagany' });
                 }
@@ -578,7 +566,6 @@ class AuthController {
                 verified = await twoFactorService.verifyTwoFactorCode(userId, code, loginIp, userAgent);
 
             } else if (method === 'WEBAUTHN') {
-                // Weryfikacja WebAuthn
                 if (!response) {
                     return res.status(400).json({ error: 'Odpowiedź WebAuthn jest wymagana' });
                 }
@@ -596,7 +583,6 @@ class AuthController {
                 }
 
             } else if (method === 'BACKUP_CODE') {
-                // Weryfikacja kodem zapasowym
                 if (!code) {
                     return res.status(400).json({ error: 'Kod zapasowy jest wymagany' });
                 }
@@ -607,7 +593,6 @@ class AuthController {
 
                 verified = await twoFactorService.verifyBackupCode(userId, code);
 
-                // Jeśli użyto kod zapasowy, wyślij alert
                 if (verified) {
                     const remainingCodes = await twoFactorService.getRemainingBackupCodesCount(userId);
                     emailUtils.sendBackupCodeUsedAlert(user.email, remainingCodes)
@@ -622,21 +607,18 @@ class AuthController {
             }
 
             // ========================================
-            // 2FA zweryfikowane - wydaj pełny token
+            // 2FA zweryfikowane
+            // 🔥 lastLoginIp = HASH
             // ========================================
             console.log('✅ 2FA verified for:', user.email);
 
-            // Aktualizuj ostatnie logowanie
-            let ipHash = null;
-            try {
-                ipHash = ReferralService.hashIP(loginIp);
-            } catch (e) {}
+            const ipHash = hashIP(loginIp);
 
             await prisma.user.update({
                 where: { id: user.id },
                 data: { 
                     lastLoginAt: new Date(),
-                    lastLoginIp: ipHash,
+                    lastLoginIp: ipHash,    // 🔥 HASH
                     twoFactorLastUsedAt: new Date()
                 }
             });
@@ -670,9 +652,7 @@ class AuthController {
         }
     }
 
-    // ========================================
-    // 🆕 POST /api/auth/2fa/webauthn/options - Opcje WebAuthn dla logowania
-    // ========================================
+    // POST /api/auth/2fa/webauthn/options
     async getWebAuthnLoginOptions(req, res) {
         try {
             const { challengeToken } = req.body;
@@ -724,7 +704,6 @@ class AuthController {
                 return res.status(401).json({ error: 'Nie zalogowano' });
             }
 
-            // 🆕 Dodaj informacje o 2FA
             const user = await prisma.user.findUnique({
                 where: { id: req.user.id },
                 select: {
@@ -756,7 +735,6 @@ class AuthController {
                     isAdmin: user.isAdmin,
                     referralCode: user.referralCode,
                     referralEarnings: parseFloat(user.referralEarnings || 0),
-                    // 🆕 Dane 2FA
                     twoFactorEnabled: user.twoFactorEnabled,
                     twoFactorMethods: user.twoFactorMethod || [],
                     twoFactorRequired: user.twoFactorRequired

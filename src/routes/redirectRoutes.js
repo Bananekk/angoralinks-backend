@@ -14,6 +14,16 @@ const CONFIG = {
     CONFIRM_TIMEOUT_MINUTES: 15
 };
 
+// 🔥 Helper do hashowania IP (spójny z authController.js)
+const hashIP = (ip) => {
+    if (!ip || ip === 'unknown') return null;
+    return crypto
+        .createHash('sha256')
+        .update(ip + (process.env.IP_HASH_SALT || 'angoralinks-2024'))
+        .digest('hex')
+        .substring(0, 32);
+};
+
 // ============================================================
 // GET /:shortCode - Przekierowanie do frontendu
 // ============================================================
@@ -21,6 +31,7 @@ router.get('/:shortCode', async (req, res, next) => {
     try {
         const { shortCode } = req.params;
 
+        // Pomiń specjalne ścieżki
         if (['info', 'unlock', 'confirm-ad', 'api', 'health'].includes(shortCode)) {
             return next();
         }
@@ -105,18 +116,17 @@ router.post('/unlock/:shortCode', async (req, res) => {
         const { shortCode } = req.params;
         const { hcaptchaToken, country: clientCountry, device } = req.body;
 
+        // Pobierz IP
         const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim()
             || req.socket.remoteAddress
             || 'unknown';
         const userAgent = req.headers['user-agent'] || '';
         const referer = req.headers['referer'] || null;
 
-        const ipHash = crypto
-            .createHash('sha256')
-            .update(clientIp + (process.env.IP_HASH_SALT || 'angoralinks-2024'))
-            .digest('hex')
-            .substring(0, 32);
+        // Hash IP (spójny z authController.js)
+        const ipHash = hashIP(clientIp);
 
+        // Znajdź link z danymi właściciela
         const link = await prisma.link.findUnique({
             where: { shortCode },
             include: {
@@ -126,7 +136,9 @@ router.post('/unlock/:shortCode', async (req, res) => {
                         isActive: true,
                         referredById: true,
                         referralDisabled: true,
-                        referralBonusExpires: true
+                        referralBonusExpires: true,
+                        registrationIp: true,    // 🔥 HASH IP rejestracji
+                        lastLoginIp: true        // 🔥 HASH ostatniego logowania
                     }
                 }
             }
@@ -144,7 +156,7 @@ router.post('/unlock/:shortCode', async (req, res) => {
             return res.status(403).json({ success: false, message: 'Link niedostępny' });
         }
 
-        // Weryfikacja hCaptcha
+        // Weryfikacja hCaptcha (opcjonalnie)
         if (process.env.HCAPTCHA_SECRET && hcaptchaToken) {
             const valid = await verifyHcaptcha(hcaptchaToken);
             if (!valid) {
@@ -152,10 +164,55 @@ router.post('/unlock/:shortCode', async (req, res) => {
             }
         }
 
-        // Sprawdź fraud
+        // ========================================
+        // 🔥 SELF-CLICK DETECTION
+        // Blokuj tylko właściciela linka (nie wszystkich!)
+        // ========================================
+        const isSelfClick = (link.user.registrationIp && ipHash === link.user.registrationIp) || 
+                            (link.user.lastLoginIp && ipHash === link.user.lastLoginIp);
+
+        if (isSelfClick) {
+            console.log(`🚫 Self-click blocked: ${shortCode} [Owner IP: ${ipHash?.substring(0, 8)}...]`);
+
+            // Zapisz zablokowaną wizytę (do analityki)
+            await prisma.visit.create({
+                data: {
+                    linkId: link.id,
+                    ip_address: clientIp,
+                    ipHash: ipHash,
+                    country: clientCountry || 'XX',
+                    countryTier: 3,
+                    cpmRateUsed: 0,
+                    device: device || detectDevice(userAgent),
+                    browser: detectBrowser(userAgent),
+                    userAgent: userAgent.substring(0, 500),
+                    earned: 0,
+                    platformEarned: 0,
+                    completed: false,
+                    adDisplayed: false,
+                    isUnique: false,
+                    fraudBlocked: true,
+                    blockReason: 'self_click'
+                }
+            });
+
+            // Daj dostęp do linku, ale bez zarobku
+            return res.json({
+                success: true,
+                redirectUrl: link.originalUrl,
+                visitId: null,
+                isRepeat: true,
+                blocked: true,
+                reason: 'self_click'
+            });
+        }
+
+        // ========================================
+        // FRAUD DETECTION (rate limiting)
+        // ========================================
         const fraudCheck = await checkFraudLimits(ipHash);
         if (!fraudCheck.allowed) {
-            console.log(`🚫 Fraud: ${shortCode} [${fraudCheck.reason}]`);
+            console.log(`🚫 Fraud blocked: ${shortCode} [${fraudCheck.reason}]`);
 
             await prisma.visit.create({
                 data: {
@@ -183,11 +240,14 @@ router.post('/unlock/:shortCode', async (req, res) => {
                 redirectUrl: link.originalUrl,
                 visitId: null,
                 isRepeat: true,
-                blocked: true
+                blocked: true,
+                reason: fraudCheck.reason
             });
         }
 
-        // Sprawdź unikalność (24h)
+        // ========================================
+        // UNIQUENESS CHECK (24h na tym samym linku)
+        // ========================================
         const windowStart = new Date();
         windowStart.setHours(windowStart.getHours() - CONFIG.UNIQUENESS_WINDOW_HOURS);
 
@@ -200,12 +260,13 @@ router.post('/unlock/:shortCode', async (req, res) => {
         });
 
         if (existingVisit) {
+            // Powtórna wizyta - tylko licznik, bez zarobku
             await prisma.link.update({
                 where: { id: link.id },
                 data: { totalClicks: { increment: 1 } }
             });
 
-            console.log(`⏭️ Powtórna: ${shortCode}`);
+            console.log(`⏭️ Repeat visit: ${shortCode} [${ipHash?.substring(0, 8)}...]`);
 
             return res.json({
                 success: true,
@@ -215,11 +276,13 @@ router.post('/unlock/:shortCode', async (req, res) => {
             });
         }
 
-        // Nowa wizyta
+        // ========================================
+        // 🎉 NOWA UNIKALNA WIZYTA!
+        // ========================================
         const country = (clientCountry || await getCountryFromIP(clientIp)).toUpperCase();
         const earningDetails = await linkService.getEarningDetails(country);
 
-        // 🔴 KLUCZOWE: Tworzymy wizytę z earned: 0
+        // Tworzymy wizytę z earned: 0 (czekamy na /confirm-ad)
         const visit = await prisma.visit.create({
             data: {
                 linkId: link.id,
@@ -227,20 +290,21 @@ router.post('/unlock/:shortCode', async (req, res) => {
                 ipHash: ipHash,
                 country: country,
                 countryTier: earningDetails.tier,
-                cpmRateUsed: earningDetails.realGrossCpm, // Zapisujemy REALNE CPM (po korekcji!)
+                cpmRateUsed: earningDetails.realGrossCpm, // 🔥 Zapisujemy REALNE CPM (po korekcji)
                 device: device || detectDevice(userAgent),
                 browser: detectBrowser(userAgent),
                 userAgent: userAgent.substring(0, 500),
                 referer: referer?.substring(0, 500),
-                earned: 0,              // 🔴 ZERO!
-                platformEarned: 0,      // 🔴 ZERO!
-                completed: false,       // 🔴 Nie ukończone
+                earned: 0,              // 🔴 ZERO - czekamy na confirm-ad
+                platformEarned: 0,
+                completed: false,       // 🔴 Jeszcze nie ukończone
                 adDisplayed: false,     // 🔴 Reklama nie wyświetlona
                 isUnique: true,
                 fraudBlocked: false
             }
         });
 
+        // Aktualizuj liczniki (ale NIE zarobki!)
         await prisma.link.update({
             where: { id: link.id },
             data: {
@@ -249,12 +313,12 @@ router.post('/unlock/:shortCode', async (req, res) => {
             }
         });
 
-        console.log(`🔓 Nowa: ${shortCode} [${country}] Tier ${earningDetails.tier} | CPM: $${earningDetails.realGrossCpm} | ID: ${visit.id}`);
+        console.log(`🔓 New visit: ${shortCode} [${country}] Tier ${earningDetails.tier} | CPM: $${earningDetails.realGrossCpm} | ID: ${visit.id}`);
 
         res.json({
             success: true,
             redirectUrl: link.originalUrl,
-            visitId: visit.id,  // 🔑 Frontend użyje do /confirm-ad
+            visitId: visit.id,      // 🔑 Frontend użyje do /confirm-ad
             isRepeat: false,
             country: country,
             tier: earningDetails.tier
@@ -278,6 +342,7 @@ router.post('/confirm-ad/:shortCode', async (req, res) => {
             return res.status(400).json({ success: false, message: 'Brak visitId' });
         }
 
+        // Znajdź wizytę z danymi linka i użytkownika
         const visit = await prisma.visit.findUnique({
             where: { id: visitId },
             include: {
@@ -300,12 +365,14 @@ router.post('/confirm-ad/:shortCode', async (req, res) => {
             return res.status(404).json({ success: false, message: 'Wizyta nie istnieje' });
         }
 
+        // Sprawdź czy wizyta należy do tego linka
         if (visit.link.shortCode !== shortCode) {
             return res.status(400).json({ success: false, message: 'Nieprawidłowy link' });
         }
 
         // Już potwierdzone?
         if (visit.adDisplayed) {
+            console.log(`⚠️ Already confirmed: ${visitId}`);
             return res.json({
                 success: true,
                 alreadyConfirmed: true,
@@ -313,27 +380,35 @@ router.post('/confirm-ad/:shortCode', async (req, res) => {
             });
         }
 
-        // Timeout (15 min)
+        // Sprawdź timeout (15 minut)
         const visitAge = Date.now() - new Date(visit.createdAt).getTime();
         if (visitAge > CONFIG.CONFIRM_TIMEOUT_MINUTES * 60 * 1000) {
+            console.log(`⏰ Visit timeout: ${visitId} (${Math.round(visitAge / 1000 / 60)} min)`);
+            
             await prisma.visit.update({
                 where: { id: visitId },
                 data: { blockReason: 'timeout' }
             });
+            
             return res.status(400).json({ success: false, message: 'Sesja wygasła' });
         }
 
+        // ========================================
         // 🔥 NALICZANIE ZAROBKU!
+        // ========================================
         const commission = await linkService.getPlatformCommission();
-        const realGrossCpm = parseFloat(visit.cpmRateUsed);
+        const realGrossCpm = parseFloat(visit.cpmRateUsed); // Już skorygowane przy /unlock
 
         const userEarning = (realGrossCpm * (1 - commission)) / 1000;
         const platformEarning = (realGrossCpm * commission) / 1000;
 
+        // Data dzisiejsza dla agregacji
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
+        // Transakcja atomowa
         await prisma.$transaction([
+            // 1. Aktualizuj wizytę
             prisma.visit.update({
                 where: { id: visitId },
                 data: {
@@ -343,6 +418,8 @@ router.post('/confirm-ad/:shortCode', async (req, res) => {
                     completed: true
                 }
             }),
+
+            // 2. Dodaj zarobek użytkownikowi
             prisma.user.update({
                 where: { id: visit.link.userId },
                 data: {
@@ -350,10 +427,16 @@ router.post('/confirm-ad/:shortCode', async (req, res) => {
                     totalEarned: { increment: userEarning }
                 }
             }),
+
+            // 3. Aktualizuj statystyki linka
             prisma.link.update({
                 where: { id: visit.linkId },
-                data: { totalEarned: { increment: userEarning } }
+                data: {
+                    totalEarned: { increment: userEarning }
+                }
             }),
+
+            // 4. Agregacja dzienna
             prisma.dailyEarning.upsert({
                 where: {
                     userId_date_country: {
@@ -380,20 +463,30 @@ router.post('/confirm-ad/:shortCode', async (req, res) => {
             })
         ]);
 
-        // Prowizja referalna
+        // ========================================
+        // PROWIZJA REFERALNA
+        // ========================================
         const user = visit.link.user;
         if (user.referredById && !user.referralDisabled) {
-            const bonusValid = !user.referralBonusExpires || new Date(user.referralBonusExpires) > new Date();
+            const bonusValid = !user.referralBonusExpires || 
+                               new Date(user.referralBonusExpires) > new Date();
+            
             if (bonusValid) {
                 try {
-                    await processReferralCommission(user.referredById, user.id, userEarning, visitId);
-                } catch (e) {
-                    console.error('Referral error:', e);
+                    await processReferralCommission(
+                        user.referredById,
+                        user.id,
+                        userEarning,
+                        visitId
+                    );
+                } catch (refError) {
+                    console.error('Referral error:', refError);
+                    // Nie przerywaj - referral to bonus
                 }
             }
         }
 
-        console.log(`💰 Zarobek: $${userEarning.toFixed(6)} [${visit.country}] | Platform: $${platformEarning.toFixed(6)}`);
+        console.log(`💰 Earning confirmed: $${userEarning.toFixed(6)} [${visit.country}] | Platform: $${platformEarning.toFixed(6)} | Link: ${shortCode}`);
 
         res.json({
             success: true,
@@ -412,20 +505,30 @@ router.post('/confirm-ad/:shortCode', async (req, res) => {
 // ============================================================
 
 async function checkFraudLimits(ipHash) {
+    if (!ipHash) return { allowed: true };
+
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const oneMinuteAgo = new Date(now.getTime() - 60000);
 
+    // Limit dzienny
     const visitsToday = await prisma.visit.count({
-        where: { ipHash, createdAt: { gte: today } }
+        where: {
+            ipHash: ipHash,
+            createdAt: { gte: today }
+        }
     });
 
     if (visitsToday >= CONFIG.MAX_VISITS_PER_IP_DAILY) {
         return { allowed: false, reason: 'daily_limit' };
     }
 
+    // Rate limit (na minutę)
     const recentVisits = await prisma.visit.count({
-        where: { ipHash, createdAt: { gte: oneMinuteAgo } }
+        where: {
+            ipHash: ipHash,
+            createdAt: { gte: oneMinuteAgo }
+        }
     });
 
     if (recentVisits >= CONFIG.RATE_LIMIT_PER_MINUTE) {
@@ -436,31 +539,46 @@ async function checkFraudLimits(ipHash) {
 }
 
 async function getCountryFromIP(ip) {
-    if (ip === '127.0.0.1' || ip === '::1' || ip === 'unknown') return 'PL';
+    if (!ip || ip === '127.0.0.1' || ip === '::1' || ip === 'unknown') {
+        return 'PL'; // Domyślnie dla localhost
+    }
 
     try {
         const fetch = (await import('node-fetch')).default;
-        const response = await fetch(`http://ip-api.com/json/${ip}?fields=countryCode`, { timeout: 3000 });
+        const response = await fetch(`http://ip-api.com/json/${ip}?fields=countryCode`, {
+            timeout: 3000
+        });
+
         if (response.ok) {
             const data = await response.json();
-            if (data.countryCode) return data.countryCode;
+            if (data.countryCode) {
+                return data.countryCode;
+            }
         }
-    } catch (e) { }
+    } catch (error) {
+        console.warn('GeoIP failed:', error.message);
+    }
 
-    return 'XX';
+    return 'XX'; // Nieznany
 }
 
 function detectDevice(userAgent) {
     if (!userAgent) return 'unknown';
     userAgent = userAgent.toLowerCase();
-    if (/mobile|android|iphone|ipod|blackberry|windows phone/.test(userAgent)) return 'mobile';
-    if (/tablet|ipad/.test(userAgent)) return 'tablet';
+
+    if (/mobile|android|iphone|ipod|blackberry|windows phone/.test(userAgent)) {
+        return 'mobile';
+    }
+    if (/tablet|ipad/.test(userAgent)) {
+        return 'tablet';
+    }
     return 'desktop';
 }
 
 function detectBrowser(userAgent) {
     if (!userAgent) return 'unknown';
     userAgent = userAgent.toLowerCase();
+
     if (userAgent.includes('firefox')) return 'Firefox';
     if (userAgent.includes('edg')) return 'Edge';
     if (userAgent.includes('chrome')) return 'Chrome';
@@ -470,49 +588,62 @@ function detectBrowser(userAgent) {
 }
 
 async function verifyHcaptcha(token) {
+    if (!token || !process.env.HCAPTCHA_SECRET) return false;
+
     try {
         const response = await fetch('https://hcaptcha.com/siteverify', {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: `secret=${process.env.HCAPTCHA_SECRET}&response=${token}`
         });
+
         const data = await response.json();
         return data.success;
-    } catch (e) {
+    } catch (error) {
+        console.error('hCaptcha error:', error);
         return false;
     }
 }
 
 async function processReferralCommission(referrerId, referredId, userEarning, visitId) {
-    const settings = await prisma.systemSettings.findUnique({ where: { id: 'settings' } });
-    if (!settings || !settings.referralSystemActive) return;
+    // Pobierz ustawienia systemu referalnego
+    const settings = await prisma.systemSettings.findUnique({
+        where: { id: 'settings' }
+    });
+
+    if (!settings || !settings.referralSystemActive) {
+        return;
+    }
 
     const commissionRate = parseFloat(settings.referralCommissionRate || '0.10');
-    const amount = userEarning * commissionRate;
-    if (amount <= 0) return;
+    const commissionAmount = userEarning * commissionRate;
 
+    if (commissionAmount <= 0) return;
+
+    // Zapisz prowizję
     await prisma.referralCommission.create({
         data: {
-            referrerId,
-            referredId,
-            visitId,
-            amount,
+            referrerId: referrerId,
+            referredId: referredId,
+            visitId: visitId,
+            amount: commissionAmount,
             referredEarning: userEarning,
-            commissionRate,
+            commissionRate: commissionRate,
             status: 'processed',
             processedAt: new Date()
         }
     });
 
+    // Dodaj do salda referrera
     await prisma.user.update({
         where: { id: referrerId },
         data: {
-            balance: { increment: amount },
-            referralEarnings: { increment: amount }
+            balance: { increment: commissionAmount },
+            referralEarnings: { increment: commissionAmount }
         }
     });
 
-    console.log(`🎁 Referral: $${amount.toFixed(6)} -> ${referrerId.substring(0, 8)}...`);
+    console.log(`🎁 Referral commission: $${commissionAmount.toFixed(6)} -> ${referrerId.substring(0, 8)}...`);
 }
 
 module.exports = router;
