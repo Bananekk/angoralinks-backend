@@ -45,8 +45,8 @@ class LinkService {
             console.error('Błąd pobierania ustawień:', error);
             return {
                 platform_commission: '0.15',
-                default_tier3_cpm: '0.10',
-                revenue_correction_factor: '0.10'
+                default_tier3_cpm: '0.80',
+                revenue_correction_factor: '0.85'
             };
         }
     }
@@ -56,14 +56,14 @@ class LinkService {
         return parseFloat(settings.platform_commission || '0.15');
     }
 
-    // 🔥 NOWA FUNKCJA: Współczynnik korekcji przychodów
+    // 🔥 FUNKCJA: Współczynnik korekcji przychodów
     async getRevenueCorrectionFactor() {
         const settings = await this.getSettings();
-        const factor = parseFloat(settings.revenue_correction_factor || '0.10');
+        const factor = parseFloat(settings.revenue_correction_factor || '0.85');
         // Zabezpieczenie przed absurdalnymi wartościami
-        if (factor <= 0 || factor > 1) {
-            console.warn(`Nieprawidłowy revenue_correction_factor: ${factor}, używam 0.10`);
-            return 0.10;
+        if (isNaN(factor) || factor <= 0 || factor > 2) {
+            console.warn(`Nieprawidłowy revenue_correction_factor: ${factor}, używam 0.85`);
+            return 0.85;
         }
         return factor;
     }
@@ -120,11 +120,11 @@ class LinkService {
             countryCode: 'XX',
             countryName: 'Other',
             tier: 3,
-            cpmRate: parseFloat(settings.default_tier3_cpm || '0.10')
+            cpmRate: parseFloat(settings.default_tier3_cpm || '0.80')
         };
     }
 
-    // 🔥 ZAKTUALIZOWANA FUNKCJA: Obliczanie zarobku z korekcją
+    // 🔥 FUNKCJA: Obliczanie zarobku z korekcją
     async calculateEarning(country) {
         const rate = await this.getRateForCountry(country);
         const commission = await this.getPlatformCommission();
@@ -143,7 +143,7 @@ class LinkService {
         return earningPerClick;
     }
 
-    // 🔥 ZAKTUALIZOWANA FUNKCJA: Szczegóły zarobku z korekcją
+    // 🔥 POPRAWIONA FUNKCJA: Szczegóły zarobku z korekcją
     async getEarningDetails(countryCode) {
         const rate = await this.getRateForCountry(countryCode);
         const commission = await this.getPlatformCommission();
@@ -154,12 +154,17 @@ class LinkService {
         const netCpm = adjustedCpm * (1 - commission);
         const earningPerClick = netCpm / 1000;
         
+        // 🔥 DODANY LOG DO DEBUGOWANIA
+        console.log(`📊 EarningDetails: ${countryCode} | Display: $${grossCpm} | Real: $${adjustedCpm.toFixed(4)} | Net: $${netCpm.toFixed(4)} | Per click: $${earningPerClick.toFixed(6)}`);
+        
         return {
             countryCode: rate.countryCode,
             countryName: rate.countryName,
             tier: rate.tier,
             // Wartości PRZED korekcją (do wyświetlania)
             displayCpm: grossCpm,
+            // 🔥 POPRAWIONE: Dodano realGrossCpm (to było brakujące!)
+            realGrossCpm: parseFloat(adjustedCpm.toFixed(4)),
             // Wartości PO korekcji (faktyczne)
             grossCpm: parseFloat(adjustedCpm.toFixed(4)),
             netCpm: parseFloat(netCpm.toFixed(4)),
@@ -251,10 +256,10 @@ class LinkService {
         };
     }
 
-    // 🔥 NOWA FUNKCJA: Aktualizacja współczynnika korekcji
+    // 🔥 FUNKCJA: Aktualizacja współczynnika korekcji
     async updateCorrectionFactor(newFactor, adminId) {
-        if (newFactor <= 0 || newFactor > 1) {
-            throw new Error('Współczynnik korekcji musi być między 0.01 a 1.00');
+        if (newFactor <= 0 || newFactor > 2) {
+            throw new Error('Współczynnik korekcji musi być między 0.01 a 2.00');
         }
 
         const updated = await prisma.platformSettings.upsert({
@@ -278,14 +283,14 @@ class LinkService {
         return updated;
     }
 
-    // 🔥 NOWA FUNKCJA: Automatyczna kalibracja na podstawie danych Adsterra
+    // 🔥 FUNKCJA: Automatyczna kalibracja na podstawie danych Adsterra
     async calibrateFromAdsterra(adsterraRevenue, ourCalculatedGross, adminId) {
         if (ourCalculatedGross <= 0) {
             throw new Error('Nasz obliczony gross musi być większy od 0');
         }
 
         const newFactor = adsterraRevenue / ourCalculatedGross;
-        const clampedFactor = Math.max(0.01, Math.min(1.0, newFactor));
+        const clampedFactor = Math.max(0.01, Math.min(2.0, newFactor));
 
         console.log(`📊 Kalibracja: Adsterra=$${adsterraRevenue}, Nasze=$${ourCalculatedGross}, Nowy faktor=${clampedFactor.toFixed(4)}`);
 
@@ -356,10 +361,10 @@ class LinkService {
         });
     }
 
-    // 🔥 NOWA FUNKCJA: Statystyki do kalibracji
+    // 🔥 FUNKCJA: Statystyki do kalibracji
     async getCalibrationStats() {
         const settings = await this.getSettings();
-        const correctionFactor = parseFloat(settings.revenue_correction_factor || '0.10');
+        const correctionFactor = parseFloat(settings.revenue_correction_factor || '0.85');
 
         // Pobierz sumę zarobków z ostatnich 7 dni
         const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
