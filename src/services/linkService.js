@@ -45,7 +45,8 @@ class LinkService {
             console.error('Błąd pobierania ustawień:', error);
             return {
                 platform_commission: '0.15',
-                default_tier3_cpm: '0.40'
+                default_tier3_cpm: '0.10',
+                revenue_correction_factor: '0.10'
             };
         }
     }
@@ -53,6 +54,18 @@ class LinkService {
     async getPlatformCommission() {
         const settings = await this.getSettings();
         return parseFloat(settings.platform_commission || '0.15');
+    }
+
+    // 🔥 NOWA FUNKCJA: Współczynnik korekcji przychodów
+    async getRevenueCorrectionFactor() {
+        const settings = await this.getSettings();
+        const factor = parseFloat(settings.revenue_correction_factor || '0.10');
+        // Zabezpieczenie przed absurdalnymi wartościami
+        if (factor <= 0 || factor > 1) {
+            console.warn(`Nieprawidłowy revenue_correction_factor: ${factor}, używam 0.10`);
+            return 0.10;
+        }
+        return factor;
     }
 
     async getAllRates() {
@@ -63,7 +76,7 @@ class LinkService {
         try {
             const rates = await prisma.cpmRate.findMany({
                 where: { isActive: true },
-                orderBy: [{ tier: 'asc' }, { cpm_rate: 'desc' }]  // ← ZMIANA: cpm_rate
+                orderBy: [{ tier: 'asc' }, { cpm_rate: 'desc' }]
             });
             this.ratesCache = rates;
             this.cacheExpiry = Date.now() + this.CACHE_TTL;
@@ -74,32 +87,32 @@ class LinkService {
         }
     }
 
-  async getRateForCountry(countryCode) {
-    if (!countryCode) {
-        return this.getDefaultRate();
-    }
-
-    try {
-        const rate = await prisma.cpmRate.findUnique({
-            where: { countryCode: countryCode.toUpperCase() }
-        });
-
-        if (rate && rate.isActive) {
-            return {
-                countryCode: rate.countryCode,
-                countryName: rate.countryName,
-                tier: rate.tier,
-                cpmRate: Number(rate.cpm_rate) || Number(rate.baseCpm) || 0,
-                isActive: rate.isActive
-            };
+    async getRateForCountry(countryCode) {
+        if (!countryCode) {
+            return this.getDefaultRate();
         }
 
-        return this.getDefaultRate();
-    } catch (error) {
-        console.error('Błąd pobierania stawki dla kraju:', error);
-        return this.getDefaultRate();
+        try {
+            const rate = await prisma.cpmRate.findUnique({
+                where: { countryCode: countryCode.toUpperCase() }
+            });
+
+            if (rate && rate.isActive) {
+                return {
+                    countryCode: rate.countryCode,
+                    countryName: rate.countryName,
+                    tier: rate.tier,
+                    cpmRate: Number(rate.cpm_rate) || Number(rate.baseCpm) || 0,
+                    isActive: rate.isActive
+                };
+            }
+
+            return this.getDefaultRate();
+        } catch (error) {
+            console.error('Błąd pobierania stawki dla kraju:', error);
+            return this.getDefaultRate();
+        }
     }
-}
 
     async getDefaultRate() {
         const settings = await this.getSettings();
@@ -107,75 +120,95 @@ class LinkService {
             countryCode: 'XX',
             countryName: 'Other',
             tier: 3,
-            cpmRate: parseFloat(settings.default_tier3_cpm || '0.40')
+            cpmRate: parseFloat(settings.default_tier3_cpm || '0.10')
         };
     }
 
+    // 🔥 ZAKTUALIZOWANA FUNKCJA: Obliczanie zarobku z korekcją
     async calculateEarning(country) {
         const rate = await this.getRateForCountry(country);
         const commission = await this.getPlatformCommission();
+        const correctionFactor = await this.getRevenueCorrectionFactor();
         
         const grossCpm = parseFloat(rate.cpmRate);
-        const netCpm = grossCpm * (1 - commission);
+        
+        // 🔥 Zastosuj współczynnik korekcji!
+        const adjustedCpm = grossCpm * correctionFactor;
+        
+        const netCpm = adjustedCpm * (1 - commission);
         const earningPerClick = netCpm / 1000;
+        
+        console.log(`💰 Kalkulacja: ${country} | Bazowy CPM: $${grossCpm} | Skorygowany: $${adjustedCpm.toFixed(4)} | User earning: $${earningPerClick.toFixed(6)}`);
         
         return earningPerClick;
     }
 
+    // 🔥 ZAKTUALIZOWANA FUNKCJA: Szczegóły zarobku z korekcją
     async getEarningDetails(countryCode) {
         const rate = await this.getRateForCountry(countryCode);
         const commission = await this.getPlatformCommission();
+        const correctionFactor = await this.getRevenueCorrectionFactor();
         
         const grossCpm = parseFloat(rate.cpmRate);
-        const netCpm = grossCpm * (1 - commission);
+        const adjustedCpm = grossCpm * correctionFactor;
+        const netCpm = adjustedCpm * (1 - commission);
         const earningPerClick = netCpm / 1000;
         
         return {
             countryCode: rate.countryCode,
             countryName: rate.countryName,
             tier: rate.tier,
-            grossCpm: grossCpm,
+            // Wartości PRZED korekcją (do wyświetlania)
+            displayCpm: grossCpm,
+            // Wartości PO korekcji (faktyczne)
+            grossCpm: parseFloat(adjustedCpm.toFixed(4)),
             netCpm: parseFloat(netCpm.toFixed(4)),
             earningPerClick: parseFloat(earningPerClick.toFixed(6)),
-            commission: commission
+            commission: commission,
+            correctionFactor: correctionFactor
         };
     }
 
     async getRatesGroupedByTier() {
-    const rates = await this.getAllRates();
-    const commission = await this.getPlatformCommission();
-    
-    const grouped = {
-        tier1: [],
-        tier2: [],
-        tier3: []
-    };
-
-    rates.forEach(rate => {
-        // Konwersja Prisma Decimal
-        const grossCpm = Number(rate.cpm_rate) || Number(rate.baseCpm) || 0;
-        const netCpm = grossCpm * (1 - commission);
-        const earningPerClick = netCpm / 1000;
-
-        const enrichedRate = {
-            countryCode: rate.countryCode,
-            countryName: rate.countryName,
-            grossCpm: grossCpm,
-            netCpm: parseFloat(netCpm.toFixed(4)),
-            earningPerClick: parseFloat(earningPerClick.toFixed(6))
+        const rates = await this.getAllRates();
+        const commission = await this.getPlatformCommission();
+        const correctionFactor = await this.getRevenueCorrectionFactor();
+        
+        const grouped = {
+            tier1: [],
+            tier2: [],
+            tier3: []
         };
 
-        if (rate.tier === 1) grouped.tier1.push(enrichedRate);
-        else if (rate.tier === 2) grouped.tier2.push(enrichedRate);
-        else grouped.tier3.push(enrichedRate);
-    });
+        rates.forEach(rate => {
+            const grossCpm = Number(rate.cpm_rate) || Number(rate.baseCpm) || 0;
+            const adjustedCpm = grossCpm * correctionFactor;
+            const netCpm = adjustedCpm * (1 - commission);
+            const earningPerClick = netCpm / 1000;
 
-    return {
-        commission: commission,
-        commissionPercent: `${(commission * 100).toFixed(0)}%`,
-        tiers: grouped
-    };
-}
+            const enrichedRate = {
+                countryCode: rate.countryCode,
+                countryName: rate.countryName,
+                // Wyświetlaj bazową stawkę (marketing)
+                displayCpm: grossCpm,
+                // Faktyczne wartości po korekcji
+                grossCpm: parseFloat(adjustedCpm.toFixed(4)),
+                netCpm: parseFloat(netCpm.toFixed(4)),
+                earningPerClick: parseFloat(earningPerClick.toFixed(6))
+            };
+
+            if (rate.tier === 1) grouped.tier1.push(enrichedRate);
+            else if (rate.tier === 2) grouped.tier2.push(enrichedRate);
+            else grouped.tier3.push(enrichedRate);
+        });
+
+        return {
+            commission: commission,
+            commissionPercent: `${(commission * 100).toFixed(0)}%`,
+            correctionFactor: correctionFactor,
+            tiers: grouped
+        };
+    }
 
     // ===== ADMIN FUNCTIONS =====
 
@@ -188,23 +221,21 @@ class LinkService {
             throw new Error(`Kraj ${countryCode} nie znaleziony`);
         }
 
-        // Zapisz historię zmiany
         await prisma.cpm_rate_history.create({
             data: {
                 country_code: countryCode,
-                old_rate: existingRate.cpm_rate,  // ← ZMIANA: cpm_rate
+                old_rate: existingRate.cpm_rate,
                 new_rate: newCpmRate,
                 changed_by: adminId
             }
         });
 
-        // Aktualizuj stawkę - wszystkie pola CPM
         const updated = await prisma.cpmRate.update({
             where: { countryCode },
             data: {
                 cpm_rate: newCpmRate,
                 baseCpm: newCpmRate,
-                userCpm: newCpmRate * 0.85,  // 85% dla użytkownika
+                userCpm: newCpmRate * 0.85,
                 updated_by: adminId,
                 lastVerified: new Date()
             }
@@ -218,6 +249,47 @@ class LinkService {
             tier: updated.tier,
             cpmRate: parseFloat(updated.cpm_rate)
         };
+    }
+
+    // 🔥 NOWA FUNKCJA: Aktualizacja współczynnika korekcji
+    async updateCorrectionFactor(newFactor, adminId) {
+        if (newFactor <= 0 || newFactor > 1) {
+            throw new Error('Współczynnik korekcji musi być między 0.01 a 1.00');
+        }
+
+        const updated = await prisma.platformSettings.upsert({
+            where: { setting_key: 'revenue_correction_factor' },
+            update: {
+                setting_value: newFactor.toString(),
+                updated_by: adminId
+            },
+            create: {
+                setting_key: 'revenue_correction_factor',
+                setting_value: newFactor.toString(),
+                description: 'Współczynnik korekcji zarobków względem Adsterra',
+                updated_by: adminId
+            }
+        });
+
+        this.clearCache();
+        
+        console.log(`📊 Zaktualizowano współczynnik korekcji na: ${newFactor}`);
+        
+        return updated;
+    }
+
+    // 🔥 NOWA FUNKCJA: Automatyczna kalibracja na podstawie danych Adsterra
+    async calibrateFromAdsterra(adsterraRevenue, ourCalculatedGross, adminId) {
+        if (ourCalculatedGross <= 0) {
+            throw new Error('Nasz obliczony gross musi być większy od 0');
+        }
+
+        const newFactor = adsterraRevenue / ourCalculatedGross;
+        const clampedFactor = Math.max(0.01, Math.min(1.0, newFactor));
+
+        console.log(`📊 Kalibracja: Adsterra=$${adsterraRevenue}, Nasze=$${ourCalculatedGross}, Nowy faktor=${clampedFactor.toFixed(4)}`);
+
+        return this.updateCorrectionFactor(clampedFactor, adminId);
     }
 
     async addCountry(data, adminId) {
@@ -282,6 +354,37 @@ class LinkService {
             orderBy: { changed_at: 'desc' },
             take: limit
         });
+    }
+
+    // 🔥 NOWA FUNKCJA: Statystyki do kalibracji
+    async getCalibrationStats() {
+        const settings = await this.getSettings();
+        const correctionFactor = parseFloat(settings.revenue_correction_factor || '0.10');
+
+        // Pobierz sumę zarobków z ostatnich 7 dni
+        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        
+        const visits = await prisma.visit.aggregate({
+            where: {
+                completed: true,
+                createdAt: { gte: sevenDaysAgo }
+            },
+            _sum: {
+                earned: true,
+                platformEarned: true
+            },
+            _count: true
+        });
+
+        return {
+            correctionFactor,
+            last7Days: {
+                totalVisits: visits._count,
+                userEarnings: parseFloat(visits._sum.earned || 0),
+                platformEarnings: parseFloat(visits._sum.platformEarned || 0),
+                grossEarnings: parseFloat(visits._sum.earned || 0) + parseFloat(visits._sum.platformEarned || 0)
+            }
+        };
     }
 
     clearCache() {
