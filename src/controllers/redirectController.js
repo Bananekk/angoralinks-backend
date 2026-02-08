@@ -60,11 +60,11 @@ class RedirectController {
     async unlock(req, res) {
         try {
             const { shortCode } = req.params;
-            const { hcaptchaToken, country: clientCountry } = req.body;
+            const { recaptchaToken, country: clientCountry } = req.body;
 
-            const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() 
-                    || req.socket.remoteAddress 
-                    || 'unknown';
+            const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim()
+                || req.socket.remoteAddress
+                || 'unknown';
             const userAgent = req.headers['user-agent'] || '';
             const referer = req.headers['referer'] || null;
 
@@ -73,8 +73,8 @@ class RedirectController {
                 where: { shortCode },
                 include: {
                     user: {
-                        select: { 
-                            id: true, 
+                        select: {
+                            id: true,
                             isActive: true,
                             referredById: true,
                             referralDisabled: true,
@@ -96,13 +96,13 @@ class RedirectController {
                 return res.status(403).json({ success: false, error: 'Link jest niedostępny' });
             }
 
-            // Weryfikacja hCaptcha (opcjonalnie)
-            if (process.env.HCAPTCHA_SECRET && hcaptchaToken) {
-                const hcaptchaValid = await this.verifyHcaptcha(hcaptchaToken);
-                if (!hcaptchaValid) {
-                    return res.status(400).json({ 
-                        success: false, 
-                        error: 'Weryfikacja captcha nie powiodła się' 
+            // Weryfikacja reCAPTCHA (opcjonalnie)
+            if (process.env.RECAPTCHA_SECRET && recaptchaToken) {
+                const recaptchaValid = await this.verifyRecaptcha(recaptchaToken);
+                if (!recaptchaValid) {
+                    return res.status(400).json({
+                        success: false,
+                        error: 'Weryfikacja captcha nie powiodła się'
                     });
                 }
             }
@@ -302,9 +302,9 @@ class RedirectController {
             const user = visit.link.user;
             if (user.referredById && !user.referralDisabled) {
                 // Sprawdź czy bonus nie wygasł
-                const bonusValid = !user.referralBonusExpires || 
-                                   new Date(user.referralBonusExpires) > new Date();
-                
+                const bonusValid = !user.referralBonusExpires ||
+                    new Date(user.referralBonusExpires) > new Date();
+
                 if (bonusValid) {
                     await this.processReferralCommission(
                         user.referredById,
@@ -400,19 +400,19 @@ class RedirectController {
         return 'XX'; // Nieznany
     }
 
-    // Pomocnicza: Weryfikacja hCaptcha
-    async verifyHcaptcha(token) {
+    // Pomocnicza: Weryfikacja reCAPTCHA
+    async verifyRecaptcha(token) {
         try {
-            const response = await fetch('https://hcaptcha.com/siteverify', {
+            const response = await fetch('https://www.google.com/recaptcha/api/siteverify', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: `secret=${process.env.HCAPTCHA_SECRET}&response=${token}`
+                body: `secret=${process.env.RECAPTCHA_SECRET}&response=${token}`
             });
 
             const data = await response.json();
             return data.success;
         } catch (error) {
-            console.error('Błąd hCaptcha:', error);
+            console.error('Błąd reCAPTCHA:', error);
             return false;
         }
     }

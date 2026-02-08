@@ -114,7 +114,7 @@ router.get('/info/:shortCode', async (req, res) => {
 router.post('/unlock/:shortCode', async (req, res) => {
     try {
         const { shortCode } = req.params;
-        const { hcaptchaToken, country: clientCountry, device } = req.body;
+        const { recaptchaToken, country: clientCountry, device } = req.body;
 
         // Pobierz IP
         const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim()
@@ -156,9 +156,9 @@ router.post('/unlock/:shortCode', async (req, res) => {
             return res.status(403).json({ success: false, message: 'Link niedostępny' });
         }
 
-        // Weryfikacja hCaptcha (opcjonalnie)
-        if (process.env.HCAPTCHA_SECRET && hcaptchaToken) {
-            const valid = await verifyHcaptcha(hcaptchaToken);
+        // Weryfikacja reCAPTCHA (opcjonalnie)
+        if (process.env.RECAPTCHA_SECRET && recaptchaToken) {
+            const valid = await verifyRecaptcha(recaptchaToken);
             if (!valid) {
                 return res.status(400).json({ success: false, message: 'Captcha nieprawidłowa' });
             }
@@ -168,8 +168,8 @@ router.post('/unlock/:shortCode', async (req, res) => {
         // 🔥 SELF-CLICK DETECTION
         // Blokuj tylko właściciela linka (nie wszystkich!)
         // ========================================
-        const isSelfClick = (link.user.registrationIp && ipHash === link.user.registrationIp) || 
-                            (link.user.lastLoginIp && ipHash === link.user.lastLoginIp);
+        const isSelfClick = (link.user.registrationIp && ipHash === link.user.registrationIp) ||
+            (link.user.lastLoginIp && ipHash === link.user.lastLoginIp);
 
         if (isSelfClick) {
             console.log(`🚫 Self-click blocked: ${shortCode} [Owner IP: ${ipHash?.substring(0, 8)}...]`);
@@ -384,12 +384,12 @@ router.post('/confirm-ad/:shortCode', async (req, res) => {
         const visitAge = Date.now() - new Date(visit.createdAt).getTime();
         if (visitAge > CONFIG.CONFIRM_TIMEOUT_MINUTES * 60 * 1000) {
             console.log(`⏰ Visit timeout: ${visitId} (${Math.round(visitAge / 1000 / 60)} min)`);
-            
+
             await prisma.visit.update({
                 where: { id: visitId },
                 data: { blockReason: 'timeout' }
             });
-            
+
             return res.status(400).json({ success: false, message: 'Sesja wygasła' });
         }
 
@@ -468,9 +468,9 @@ router.post('/confirm-ad/:shortCode', async (req, res) => {
         // ========================================
         const user = visit.link.user;
         if (user.referredById && !user.referralDisabled) {
-            const bonusValid = !user.referralBonusExpires || 
-                               new Date(user.referralBonusExpires) > new Date();
-            
+            const bonusValid = !user.referralBonusExpires ||
+                new Date(user.referralBonusExpires) > new Date();
+
             if (bonusValid) {
                 try {
                     await processReferralCommission(
@@ -587,20 +587,20 @@ function detectBrowser(userAgent) {
     return 'Other';
 }
 
-async function verifyHcaptcha(token) {
-    if (!token || !process.env.HCAPTCHA_SECRET) return false;
+async function verifyRecaptcha(token) {
+    if (!token || !process.env.RECAPTCHA_SECRET) return false;
 
     try {
-        const response = await fetch('https://hcaptcha.com/siteverify', {
+        const response = await fetch('https://www.google.com/recaptcha/api/siteverify', {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `secret=${process.env.HCAPTCHA_SECRET}&response=${token}`
+            body: `secret=${process.env.RECAPTCHA_SECRET}&response=${token}`
         });
 
         const data = await response.json();
         return data.success;
     } catch (error) {
-        console.error('hCaptcha error:', error);
+        console.error('reCAPTCHA error:', error);
         return false;
     }
 }
